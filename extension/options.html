@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>哔哩朝花夕拾 - 设置</title>
+  <style>
+    body { width: 760px; margin: 24px auto; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #18191c; background: #f6f7f8; }
+    h1 { font-size: 18px; }
+    h1 small { color: #9499a0; font-size: 13px; font-weight: 400; margin-left: 8px; }
+    .card { background: #fff; border: 1px solid #e3e5e7; border-radius: 10px; padding: 16px 18px; margin: 14px 0; }
+    .card h2 { margin: 0 0 10px; font-size: 15px; }
+    .card .desc { color: #9499a0; font-size: 12px; margin: -4px 0 10px; line-height: 1.6; }
+    .row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; }
+    .row label { flex: 1; }
+    .muted { color: #9499a0; font-size: 12px; }
+    button { border: 1px solid #e3e5e7; background: #fff; color: #18191c; font-size: 13px;
+      padding: 6px 14px; border-radius: 8px; cursor: pointer; }
+    button:hover { background: #f6f7f8; }
+    button.primary { background: #00a1d6; border-color: #00a1d6; color: #fff; }
+    button.primary:hover { background: #00b3e5; }
+    button.danger { border-color: #ff9a9a; color: #d54949; }
+    button.danger:hover { background: #fff2f2; }
+    .folder { display: flex; align-items: center; gap: 8px; padding: 7px 6px; border-radius: 8px; font-size: 13px; }
+    .folder:hover { background: #f6f7f8; }
+    .folder input[type=checkbox] { width: 16px; height: 16px; }
+    .folder .info { flex: 1; min-width: 0; }
+    .folder .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .folder .s { color: #9499a0; font-size: 12px; }
+    .tag { font-size: 11px; padding: 1px 7px; border-radius: 8px; background: #f1f2f3; color: #61666d; margin-left: 6px; }
+    .tag.collected { background: #e8f6fb; color: #00a1d6; }
+    .folder .err { color: #d54949; font-size: 12px; }
+    input[type=date] { border: 1px solid #c9cdd2; border-radius: 6px; padding: 5px 8px; font-size: 13px; }
+    .chip { border: 1px solid #d0d3d8; border-radius: 12px; padding: 3px 10px; font-size: 12px;
+      color: #00a1d6; cursor: pointer; background: #fff; margin: 3px 6px 0 0; }
+    .chip:hover { background: #e8f6fb; }
+    .statusline { font-size: 13px; padding: 4px 0; }
+    .fgroup-title { font-weight: 700; font-size: 13px; color: #61666d; padding: 10px 0 2px;
+      margin-top: 8px; border-bottom: 1px solid #f1f2f3; }
+    .fgroup-title .cnt { color: #9499a0; font-weight: 400; margin-left: 6px; font-size: 12px; }
+    .fgroup-title.fgroup-toggle { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
+    .fgroup-title .fgroup-t { flex: 1; }
+    .fgroup-caret { display: inline-block; width: 16px; color: #00a1d6; font-size: 11px; }
+    .mini-btn { flex: none; padding: 2px 10px; font-size: 12px; border-radius: 10px; }
+    .fgroup-body { margin: 0; }
+    input.num3 { width: 56px; border: 1px solid #c9cdd2; border-radius: 6px; padding: 4px 6px; font-size: 13px; }
+    .error { color: #d54949; }
+
+    /* 高级设置（折叠，默认收起） */
+    details.advcard { background: #fff; border: 1px solid #e3e5e7; border-radius: 10px; margin: 14px 0; overflow: hidden; }
+    details.advcard > summary { padding: 14px 18px; font-size: 15px; font-weight: 700; cursor: pointer;
+      list-style: none; display: flex; justify-content: space-between; align-items: center; }
+    details.advcard > summary::-webkit-details-marker { display: none; }
+    details.advcard > summary::after { content: '▾'; color: #9499a0; transition: transform 0.15s; }
+    details.advcard[open] > summary::after { transform: rotate(180deg); }
+    .adv-body { padding: 2px 18px 16px; }
+    .adv-group { padding: 12px 0 2px; }
+    .adv-title { font-weight: 700; font-size: 14px; margin: 0 0 6px; }
+  </style>
+</head>
+<body>
+  <h1>哔哩朝花夕拾<small>设置</small></h1>
+
+  <div class="card">
+    <h2>登录与同步</h2>
+    <div id="loginStatus" class="statusline">加载中…</div>
+    <div id="syncStatus" class="statusline"></div>
+    <div class="row">
+      <span>自动同步：</span>
+      <label><input type="radio" name="syncMode" value="manual" /> 手动（仅点同步按钮）</label>
+      <label><input type="radio" name="syncMode" value="onHome" /> 首页每次</label>
+      <label><input type="radio" name="syncMode" value="daily" /> 每天一次</label>
+    </div>
+    <div class="row">
+      <span>本次同步范围：</span>
+      <label><input type="radio" name="syncScope" value="all" /> 全部</label>
+      <label><input type="radio" name="syncScope" value="created" /> 仅我创建的</label>
+      <label><input type="radio" name="syncScope" value="collected" /> 仅追更的（收藏的）</label>
+    </div>
+    <div class="row">
+      <button id="btnSync">增量同步</button>
+      <button id="btnFull">全量重同步</button>
+      <button id="btnRefreshFolders">刷新收藏夹</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>收藏夹 <span class="muted">（<span id="folderCount"></span>）</span></h2>
+    <div id="folderList"></div>
+  </div>
+
+  <div class="card">
+    <h2>提醒与显示选项</h2>
+    <div class="row">
+      <label><input type="checkbox" id="optHideInvalid" /> 不提醒/不展示已失效视频（默认开）</label>
+    </div>
+    <div class="row">
+      <span>2/29 发布的投稿，平年归并到：</span>
+      <label><input type="radio" name="feb29" value="0228" /> 2/28（默认）</label>
+      <label><input type="radio" name="feb29" value="0301" /> 3/1</label>
+    </div>
+    <div class="row">
+      <span>浮层卡片最多展示条数：</span>
+      <span id="maxShowText"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>关于</h2>
+    <div>
+      哔哩朝花夕拾 v0.1.0（开发版）· 非哔哩哔哩官方产品。<br />
+      数据仅存本机 chrome.storage.local，卸载即清除；不读取、不存储 Cookie；请求仅发往 bilibili.com 系域名。
+    </div>
+  </div>
+
+  <!-- 高级设置：平时折叠，防止误触 -->
+  <details class="advcard">
+    <summary>高级设置</summary>
+    <div class="adv-body">
+
+      <div class="adv-group">
+        <div class="adv-title">风控与频率</div>
+        <div class="row">
+          <span>412 风控冷却：</span>
+          <input type="number" id="riskWaitH" class="num3" min="0" value="0" /> 时
+          <input type="number" id="riskWaitM" class="num3" min="0" value="15" /> 分
+          <input type="number" id="riskWaitS" class="num3" min="0" value="0" /> 秒
+          <span class="muted">（默认 15 分钟）</span>
+        </div>
+        <div class="row">
+          <span>单段配额暂停：</span>
+          <input type="number" id="burstPauseH" class="num3" min="0" value="0" /> 时
+          <input type="number" id="burstPauseM" class="num3" min="0" value="5" /> 分
+          <input type="number" id="burstPauseS" class="num3" min="0" value="0" /> 秒
+          <span class="muted">（默认 5 分钟）</span>
+        </div>
+        <div class="row">
+          <span>每段连续页数：</span>
+          <input type="number" id="burstPages" class="num3" min="1" step="1" value="120" /> 页
+          <span class="muted">（每同步满此页数后停顿一次，默认 120）</span>
+        </div>
+      </div>
+
+      <div class="adv-group">
+        <div class="adv-title">🧪 调试：模拟“今天”</div>
+        <div class="row">
+          <span>当前生效：</span><strong id="effNow">-</strong>
+          <button id="btnReal">恢复真实日期</button>
+          <button id="btnForce">清除今日去重标记</button>
+        </div>
+        <div class="row">
+          <span>模拟日期：</span><input type="date" id="debugDate" />
+          <button id="btnSetDebug">应用</button>
+        </div>
+        <div id="availChips"></div>
+      </div>
+
+      <div class="adv-group">
+        <div class="adv-title">数据管理</div>
+        <div class="row">
+          <button id="btnClear" class="danger">清空本地数据（收藏夹/条目/同步状态）</button>
+          <span class="muted">设置与模拟日期也会被重置</span>
+        </div>
+      </div>
+
+    </div>
+  </details>
+
+  <script src="common.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

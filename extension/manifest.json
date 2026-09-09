@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "哔哩朝花夕拾",
+  "version": "0.1.0",
+  "description": "打开哔哩哔哩首页时，提醒你收藏夹中“历史上的今天”发布的投稿",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://*.bilibili.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.bilibili.com/",
+        "https://www.bilibili.com/?*",
+        "https://bilibili.com/",
+        "https://bilibili.com/?*"
+      ],
+      "js": [
+        "common.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "哔哩朝花夕拾"
+  },
+  "options_page": "options.html",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

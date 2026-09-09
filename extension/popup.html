@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body { width: 400px; margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #18191c; background: #fff; }
+    .head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px;
+      border-bottom: 1px solid #f1f2f3; }
+    .name { font-weight: 700; font-size: 15px; }
+    .name small { color: #9499a0; font-weight: 400; margin-left: 6px; }
+    .pill { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #f1f2f3; color: #61666d; }
+    .pill.ok { background: #e8f6fb; color: #00a1d6; }
+    .pill.warn { background: #fff7ec; color: #f08519; }
+    .pill.sim { background: #4b2e83; color: #fff; }
+    .sec { padding: 10px 14px; border-bottom: 1px solid #f5f6f7; }
+    .sec h3 { margin: 0 0 8px; font-size: 12px; color: #9499a0; font-weight: 600; }
+    .line { font-size: 13px; margin: 4px 0; }
+    .muted { color: #9499a0; font-size: 12px; }
+    .items { max-height: 300px; overflow-y: auto; }
+    .item { display: flex; gap: 8px; padding: 6px 0; cursor: pointer; align-items: center; }
+    .item:hover .t { color: #00a1d6; }
+    .item img { width: 72px; height: 45px; object-fit: cover; border-radius: 4px; background: #f1f2f3; flex: none; }
+    .item .m { flex: 1; min-width: 0; }
+    .t { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .s { font-size: 12px; color: #61666d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+    .s2 { font-size: 11px; color: #9499a0; margin-top: 2px; }
+    .bar { display: flex; gap: 8px; padding: 10px 14px; }
+    button { border: 1px solid #e3e5e7; background: #fff; color: #18191c; font-size: 13px;
+      padding: 7px 0; border-radius: 8px; cursor: pointer; }
+    button:hover { background: #f6f7f8; }
+    .bar button, .welcome-box .btn-go { flex: 1; }
+    button.primary { background: #00a1d6; border-color: #00a1d6; color: #fff; }
+    button.primary:hover { background: #00b3e5; }
+    .empty { text-align: center; color: #9499a0; font-size: 13px; padding: 18px 0; }
+    .debug { background: #f6f7f8; padding: 10px 14px; font-size: 12px; color: #61666d; }
+    .debug .row { display: flex; gap: 6px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+    .debug input { border: 1px solid #c9cdd2; border-radius: 6px; padding: 4px 6px; font-size: 12px; }
+    .debug button { flex: none; padding: 4px 10px; font-size: 12px; }
+    .hint { background: #fff7ec; color: #f08519; font-size: 12px; padding: 8px 14px; }
+    .mini-btn { flex: none; padding: 2px 10px !important; font-size: 12px; border-radius: 10px; }
+    .mini-btn.danger { color: #d54949; border-color: #ff9a9a; }
+    .scoperow { display: flex; align-items: center; gap: 6px; padding: 8px 14px 0; font-size: 12px; }
+    .scoperow .muted { margin-right: 2px; }
+    .scope-btn { flex: none; padding: 4px 10px; font-size: 12px; border-radius: 12px; }
+    .scope-btn.active { background: #00a1d6; border-color: #00a1d6; color: #fff; }
+
+    /* 首次使用欢迎面板 */
+    .welcome-box { padding: 26px 20px 22px; text-align: center; }
+    .welcome-box .w-name { font-size: 18px; font-weight: 700; margin-bottom: 10px; }
+    .welcome-box .w-sub { color: #61666d; font-size: 13px; line-height: 1.7; margin-bottom: 20px; }
+    .welcome-box .btn-go { width: 100%; padding: 10px 0; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <!-- 首次使用（从未同步过）：仅欢迎语 + 开始按钮 -->
+  <div id="welcomeBox" class="welcome-box" style="display:none">
+    <div class="w-name">哔哩朝花夕拾</div>
+    <div class="w-sub">欢迎使用！<br />同步收藏夹后，每次打开哔哩哔哩首页，<br />就能看到「历史上的今天」收藏提醒。</div>
+    <button id="btnGoStart" class="primary btn-go">进入哔哩哔哩 · 开始同步收藏夹</button>
+  </div>
+
+  <!-- 已使用：完整面板 -->
+  <div id="mainBox" style="display:none">
+    <div class="head">
+      <div class="name">哔哩朝花夕拾<small>收藏·历史上的今天</small></div>
+      <span id="loginPill" class="pill">…</span>
+    </div>
+
+    <div id="debugHint" class="hint" style="display:none"></div>
+
+    <div class="sec">
+      <h3>今日命中（<span id="effDate">-</span>）</h3>
+      <div id="items" class="items">
+        <div class="empty">加载中…</div>
+      </div>
+    </div>
+
+    <div class="sec" style="border-bottom:none">
+      <div class="line"><span class="muted">收藏夹：</span><span id="folderInfo">-</span>
+        &nbsp;<span class="muted">同步：</span><span id="syncInfo">-</span></div>
+      <div class="line">
+        <button id="btnRefreshFolders" class="mini-btn">刷新收藏夹</button>
+        <button id="btnCancelSync" class="mini-btn danger" style="display:none">终止同步</button>
+      </div>
+      <div id="syncNote" class="line muted" style="display:none"></div>
+    </div>
+
+    <div id="debugBox" class="debug" style="display:none">
+      <div class="row" id="debugRow"></div>
+    </div>
+
+    <div class="scoperow">
+      <span class="muted">本次同步范围：</span>
+      <button class="scope-btn active" data-scope="all">全部</button>
+      <button class="scope-btn" data-scope="created">仅我创建的</button>
+      <button class="scope-btn" data-scope="collected">仅追更的</button>
+    </div>
+
+    <div class="bar">
+      <button id="btnSync">增量同步</button>
+      <button id="btnFull">全量重同步</button>
+      <button id="btnOptions" class="primary">设置</button>
+    </div>
+  </div>
+
+  <script src="common.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

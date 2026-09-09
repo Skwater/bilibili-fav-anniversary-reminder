@@ -1,0 +1,16 @@
+# 仅保留 README.md 上传；以下设计/交接文档只在本地
+需求梳理.md
+开发调试说明.md
+状态交接.md
+
+# 系统/工具杂物
+.DS_Store
+Thumbs.db
+*.log
+*.zip
+*.crx
+
+# 临时
+.tmp/
+tools/_ref/
+node_modules/
