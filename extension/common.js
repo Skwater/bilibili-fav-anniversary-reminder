@@ -18,7 +18,6 @@ const CFG = {
   DEFAULT_SETTINGS: {
     hideInvalid: true,   // 默认不提醒/不展示失效视频
     feb29: '0228',       // 2/29 平年归并：'0228' 或 '0301'
-    maxShow: 10,         // 浮层卡片最多展示条数
     syncMode: 'manual',  // 自动同步：'manual'手动 / 'onHome'首页每次 / 'daily'每天一次
     rateWaitMs: 15 * 60 * 1000,   // 412 风控冷却（默认 15 分钟，设置页可改）
     burstPauseMs: 5 * 60 * 1000,  // 单段配额暂停（默认 5 分钟，设置页可改）

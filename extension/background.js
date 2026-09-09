@@ -268,7 +268,12 @@ async function ensureFolderList(force) {
       // 差异检测基线随重建一并保留（否则每轮刷新列表都会清零导致无限重复补齐）
       diffIds: old ? old.diffIds : undefined,
       diffLocal: old ? old.diffLocal : undefined,
-      diffMedia: old ? old.diffMedia : undefined
+      diffMedia: old ? old.diffMedia : undefined,
+      // 稳定快通道标记（随重建保留）：diffGhost=官方数多出的部分是占位（本地已齐）；
+      // diffCapped=ids 触顶、决策只看官方总数/本地。二者为 true 且三值基线未变时，
+      // 连 ids 探测都可跳过（真正近零请求），无需每轮打探测。
+      diffGhost: old ? old.diffGhost : undefined,
+      diffCapped: old ? old.diffCapped : undefined
     });
   };
 
@@ -277,6 +282,10 @@ async function ensureFolderList(force) {
     const url = api + '/created/list-all?up_mid=' + mid;
     const res = await proxyFetch(url);
     const j = res.json || {};
+    if (res.status === 412 || j.code === -412) {
+      log('收藏夹[created] HTTP412（风控），进入冷却');
+      throw Object.assign(new Error('rate 412'), { kind: 'RATE' });
+    }
     if (res.ok && j.code === 0 && j.data && Array.isArray(j.data.list)) {
       for (const raw of j.data.list) pushRow(raw, 'created');
       results.push('created');
@@ -297,6 +306,12 @@ async function ensureFolderList(force) {
       const url = api + '/collected/list?up_mid=' + mid + '&pn=' + pn + '&ps=' + ps + '&platform=web';
       const res = await proxyFetch(url);
       const j = res.json || {};
+      if (res.status === 412 || j.code === -412) {
+        // 风控：中止本轮并进入冷却，避免硬刷分页把 412 拖得更久
+        log('收藏夹[collected] HTTP412（风控），进入冷却（已拉', fetched, '条）');
+        throw Object.assign(new Error('rate 412'), { kind: 'RATE' });
+      }
+      if (pn === 200) log('收藏夹[collected] 分页触顶 pn=200（已拉', fetched, '条，可能被截断）');
       if (!(res.ok && j.code === 0 && j.data && Array.isArray(j.data.list))) {
         if (pn === 1) {
           failCount++;
@@ -378,6 +393,18 @@ async function syncOneFolder(folder, opts) {
     }
   }
   const seen = new Set();
+  // 断点/中断恢复（PAUSE/412/重试/SW 被杀后游标仍在）：把此前各段累积的
+  // accumSeen 并回 seen —— 保证“多段全量收敛”在完成段做清理时，不会把前几段
+  // 已确认过的条目误判为“已不在夹中”而删除（曾导致大夹收敛后本地被截断）。
+  // resumeAccSeen 同时作为“本段 seen 是否覆盖了夹的开头部分”的依据：
+  // 续传段若无前段累积（旧版本游标），宁可跳过清理也不误删。
+  let resumeAccSeen = null;
+  if (full && mem.syncCursor && mem.syncCursor.mediaId === mediaId &&
+      Array.isArray(mem.syncCursor.accumSeen) &&
+      (Date.now() - (mem.syncCursor.updatedAt || 0)) < CFG.CURSOR_TTL_MS) {
+    resumeAccSeen = mem.syncCursor.accumSeen;
+    for (const k of resumeAccSeen) seen.add(k);
+  }
   let pages = 0;
   let apiFailed = false;
 
@@ -426,10 +453,14 @@ async function syncOneFolder(folder, opts) {
       }
       pages++;
       pn++;
-      await persistCursor({
+      // 跨段累积已确认 keys（仅全量；增量到已知边界即停，无需跨段记忆）：
+      // 断点/中断/被杀后，完成段的清理基于各段全集，不会误删前段条目。
+      const cur = {
         updatedAt: Date.now(), mediaId, pn, full,
         sessionFull: opts.sessionFull === undefined ? full : !!opts.sessionFull
-      });
+      };
+      if (full) cur.accumSeen = Array.from(seen);
+      await persistCursor(cur);
       // 单段配额：跑满自动暂停（游标已存，暂停后从下一页续传），避免顶到隐形风控配额
       if (++pageBudgetUsed >= burstLimit) {
         log('单段配额用完（', pageBudgetUsed, ' 页），暂停本轮');
@@ -462,7 +493,9 @@ async function syncOneFolder(folder, opts) {
   }
 
   // 全量完成后清理：把已不在该夹的条目摘除该夹
-  if (full) {
+  // 安全前提：本段 seen 覆盖了夹的开头（从 pn=1 起扫，或续传且带前段 accumSeen）；
+  // 否则跳过清理（残留交由未来某轮从头开始的全量/差异处理），避免误删前段条目。
+  if (full && (startPn <= 1 || resumeAccSeen != null)) {
     const toDelete = [];
     for (const k of Object.keys(mem.items)) {
       const it = mem.items[k];
@@ -525,6 +558,17 @@ async function runDiffPass(folders) {
       continue;
     }
 
+    // 快通道：上次核对已确认差异本质（幽灵占位=diffGhost / ids 触顶=diffCapped），
+    // 且官方总数、本地数均未变 → 无需再打 ids 探测（真正近零请求）。
+    // 边界：若用户在总数不变的情况下“换”了一条（删一加一）会漏一轮，但下次总数
+    // 变动即纠正；作为“近零请求”与文档承诺的权衡可接受。
+    const mNow = folder.mediaCount || 0;
+    if ((folder.diffGhost === true || folder.diffCapped === true) &&
+        folder.diffLocal === local && folder.diffMedia === mNow) {
+      folder.lastSyncAt = Date.now() / 1000;
+      continue;
+    }
+
     // 计数不符：ids 精核对（只看视频稿件）
     const url = 'https://api.bilibili.com/x/v3/fav/resource/ids?media_id=' + encodeURIComponent(folder.mediaId);
     const res = await proxyFetch(url);
@@ -534,17 +578,34 @@ async function runDiffPass(folders) {
       const videos = idsArr.filter(m => m.type === undefined || m.type === 2).length;
       // ids 疑似触顶（返回数 ≥1000 且远小于官方总数）→ 不能拿它当全集做相等判断
       const capped = idsArr.length >= 1000 && (folder.mediaCount || 0) > idsArr.length;
+      // 每次探测即刷新“差异本质”标记：capped 夹决策只看官方总数/本地数，
+      // 非 capped 且可枚举视频与本地一致 → 幽灵夹。二者都用于下一轮快通道免探测。
+      folder.diffCapped = capped ? true : undefined;
+      if (!capped && videos === local) folder.diffGhost = true;
+      else folder.diffGhost = undefined;
       // 基线稳定（幽灵占位等恒定差值）：官方/本地/总数三者未变 → 吸收并跳过
       const baseSame = folder.diffIds != null &&
         folder.diffIds === videos &&
         folder.diffLocal === local &&
-        folder.diffMedia === (folder.mediaCount || 0);
+        folder.diffMedia === mNow;
       if (baseSame) {
+        // 差异本质已由上面探测结果刷新（capped→diffCapped / 非 capped 稳定差→diffGhost），
+        // 但 baseSame 场景（如 ids 含本地拉不到的失效条目，videos>local 恒定）此前不会设
+        // diffGhost → 每轮仍打 ids。这里补设，让下一轮走快通道免探测。
+        if (!capped) folder.diffGhost = true;
         folder.lastSyncAt = Date.now() / 1000;
+        await persistFolders();
         continue;
       }
       if (!capped && videos === local) {
+        // 幽灵差异（官方总数>本地，多出的部分是 resource/list 拉不到的占位）：
+        // 本地视频已与官方可枚举视频一致 → 写基线 + diffGhost 标记，此后快通道免探测。
+        folder.diffIds = videos;
+        folder.diffLocal = local;
+        folder.diffMedia = mNow;
+        folder.diffGhost = true;
         folder.lastSyncAt = Date.now() / 1000;
+        await persistFolders();
         continue;
       }
 
@@ -561,6 +622,8 @@ async function runDiffPass(folders) {
           act = '全量（首次收敛，ids 达上限）';
           log('触顶大夹 → 首次全量收敛:', folder.title, '| 本地', local, '| 官方总数', m);
         } else if (m > folder.diffMedia) {
+          // 真正执行增量补新（从 pn=1 拉到已知边界），而不是只记 lastSyncAt 跳过——
+          // 否则新增收藏永不入库，且基线不更新导致每轮重复打 ids 探测。
           full = false;
           act = '增量补新';
           log('触顶大夹 → 总数增加，增量补新:', folder.title, '| 本地', local, '| 官方总数', m);
@@ -568,12 +631,11 @@ async function runDiffPass(folders) {
           full = true;
           act = '全量清理';
           log('触顶大夹 → 总数减少，全量清理:', folder.title, '| 本地', local, '| 官方总数', m);
+        } else if (folder.diffLocal !== local) {
+          full = true;   // 总数未变但本地漂移：保险走全量
+          act = '全量（内部漂移）';
+          log('触顶大夹 → 内部漂移，全量:', folder.title, '| 本地', local, '| 官方总数', m);
         } else {
-          full = folder.diffLocal !== local;   // 总数未变但本地漂移：保险走全量
-          act = full ? '全量（内部漂移）' : '跳过';
-          if (full) log('触顶大夹 → 内部漂移，全量:', folder.title, '| 本地', local, '| 官方总数', m);
-        }
-        if (!full) {
           folder.lastSyncAt = Date.now() / 1000;
           continue;   // 基线已代表当前状态，无动作
         }
@@ -584,8 +646,11 @@ async function runDiffPass(folders) {
       }
 
       // 针对性补齐（删除/触顶场景保留中断游标续传）
+      // 仅当残留游标本身是“全量”扫描时才续传 pn：增量游标（full=false）只到已知
+      // 边界即停，若被 full 清理误用会从半途续扫、把前段条目当“已删除”清掉。
       let startPn = 1;
       if (full && mem.syncCursor && mem.syncCursor.mediaId === folder.mediaId &&
+          mem.syncCursor.full &&   // 游标必须是全量扫描残留
           (Date.now() - (mem.syncCursor.updatedAt || 0)) < CFG.CURSOR_TTL_MS) {
         startPn = mem.syncCursor.pn || 1;
       }
@@ -645,6 +710,9 @@ async function runRefresh() {
   if (mem.meta.resumeAt) await clearHold();
   if (refreshBusy) { refreshQueued = true; return; }
   refreshBusy = true;
+  // 新会话复位终止标志：空闲期点过“终止”只清了冷却/游标，不该让下一次手动同步
+  // 一开始就被残留的 cancelSync 立刻 STOP（曾导致终止后需点两次才开始）。
+  cancelSync = false;
   pageBudgetUsed = 0;
   burstLimit = settingNum('burstPages', CFG.BURST_PAGES);
   pauseReason = '';
@@ -740,6 +808,14 @@ async function runRefresh() {
       setFlow(`同步中 ${i + 1}/${doneTotal}：「${folder.title}」`);
       await syncOneFolder(folder, { full, sessionFull, startPn: cont ? cont.pn : 1 });
       await persistCursor(null);           // 该夹已完成
+      // 全量扫描完成即记录基线（diffLocal/diffMedia），防止下一轮差异检测把刚收敛的
+      // 幽灵/触顶大夹（local<mediaCount）误判为“首次收敛”再白跑一轮全量。
+      // diffIds 不在此设：本路径未打 ids，capped 分支判断只依赖 diffMedia/diffLocal。
+      if (full) {
+        folder.diffLocal = countFolderLocal(folder.mediaId);
+        folder.diffMedia = folder.mediaCount || 0;
+        await persistFolders();
+      }
       if (cont) resume = null;
       pushView();                          // 每夹推一次进度
       if (!latestHomeTabId) return;        // 页面全关，中断
@@ -1023,12 +1099,13 @@ async function handle(msg, sender) {
       const wait = coolingMs();
       if (wait > 0 && !force) {
         const s = Math.max(1, Math.ceil(wait / 1000));
+        const reason = pauseReason === '412' ? '412' : (mem.meta.resumeReason === '412' ? '412' : 'quota');
         log('同步请求被冷却拦截，剩余', s, '秒');
-        setFlow(pauseReason === '412'
+        setFlow(reason === '412'
           ? 'B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传'
           : '同步暂停（单段配额已用完），约 ' + s + ' 秒后自动继续');
         pushView();
-        return { started: false, cooldown: true, seconds: s };
+        return { started: false, cooldown: true, seconds: s, reason };
       }
       if (force) forceSkipCooldown = true;   // 交由 runRefresh 清除冷却并开跑
       // 复用真实 B 站页面（content 向导 / popup 正好点在 B 站上）；否则查已打开的 B 站标签
@@ -1059,6 +1136,17 @@ async function handle(msg, sender) {
     }
 
     case MSG.REFRESH_FOLDERS: {
+      // 冷却中先拦截：给出剩余秒数，避免“已受理”但实际被 runRefresh 内部吞掉
+      const wait2 = coolingMs();
+      if (wait2 > 0) {
+        const s = Math.max(1, Math.ceil(wait2 / 1000));
+        const reason = pauseReason === '412' ? '412' : (mem.meta.resumeReason === '412' ? '412' : 'quota');
+        setFlow(reason === '412'
+          ? 'B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传'
+          : '同步暂停（单段配额已用完），约 ' + s + ' 秒后自动继续');
+        pushView();
+        return { cooldown: true, seconds: s, reason };
+      }
       const tab = pickSenderBiliTab(sender) || await findHomeTab();
       if (!tab) {
         mem.pendingManual = true;

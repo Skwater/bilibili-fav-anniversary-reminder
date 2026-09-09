@@ -143,7 +143,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (r && r.cooldown) {
         const n = $('syncNote');
         n.style.display = 'block';
-        n.textContent = '冷却中，稍后再刷新收藏夹列表。';
+        n.textContent = cooldownText(r.seconds, r.reason);
       }
     });
   });
@@ -156,12 +156,10 @@ document.addEventListener('DOMContentLoaded', () => {
 function syncNow(full) {
   chrome.runtime.sendMessage({ type: MSG.SYNC_NOW, full, scope: syncScope }, r => {
     if (r && r.cooldown) {
-      // 冷却中：给可见提示，不轮询
+      // 冷却中：给可见提示，不轮询（区分 412 风控 / 配额暂停）
       const note = $('syncNote');
       note.style.display = 'block';
-      note.textContent = r.seconds >= 60
-        ? 'B 站接口风控冷却中，约 ' + Math.ceil(r.seconds / 60) + ' 分钟后自动续传。'
-        : 'B 站接口风控冷却中，约 ' + r.seconds + ' 秒后自动续传。';
+      note.textContent = cooldownText(r.seconds, r.reason);
       return;
     }
     if (r && r.openingHome) {
@@ -180,6 +178,15 @@ function syncNow(full) {
       if (++n >= 40 || !(view && view.syncing)) clearInterval(iv);
     }, 1200);
   });
+}
+
+/* 冷却文案：412=风控，其余=单段配额暂停 */
+function cooldownText(seconds, reason) {
+  const s = Math.max(1, seconds || 0);
+  const t = s >= 60 ? Math.ceil(s / 60) + ' 分钟' : s + ' 秒';
+  return reason === '412'
+    ? 'B 站接口风控(412)冷却中，约 ' + t + ' 后自动续传。'
+    : '同步暂停（单段配额已用完），约 ' + t + ' 后自动继续。';
 }
 
 /* 后台数据变化时自动刷新（如同步进度、设置改动）——防抖 */

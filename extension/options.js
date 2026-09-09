@@ -160,7 +160,6 @@ async function refreshAll() {
   if (!timeFocused('riskWait')) fillTime('riskWaitH', 'riskWaitM', 'riskWaitS', settings.rateWaitMs);
   if (!timeFocused('burstPause')) fillTime('burstPauseH', 'burstPauseM', 'burstPauseS', settings.burstPauseMs);
   if (document.activeElement !== $('burstPages')) $('burstPages').value = String(settings.burstPages || 120);
-  $('maxShowText').textContent = String(settings.maxShow);
   getView().then(v => { if (v) renderView(v); }).catch(() => {});
   renderFolders();
 }
