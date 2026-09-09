@@ -537,7 +537,21 @@ function countFolderLocal(mediaId) {
   return n;
 }
 
-async function runDiffPass(folders) {
+/* 若游标属于该夹则清空（该夹已被确认完成/无需再续传）。用于“无动作”路径：
+   避免游标残留导致后续每次会话都跳跃到同一夹、且它前面的夹被跳过。 */
+function clearOwnCursorIf(folder) {
+  if (mem.syncCursor && mem.syncCursor.mediaId === folder.mediaId) return persistCursor(null);
+  return null;
+}
+
+/* 统一同步会话：逐夹保证本地与官方一致。
+   forceFull=true  → “全量周期”（首次同步 / 距上次全量超 24h / 手动全量重同步）：
+                     每个启用夹都全量扫描一遍；断点续传会延续全量直到会话结束。
+   forceFull=false → “差异会话”（日常增量同步）：一致的夹零请求跳过；不一致的夹
+                     增量补新 / 全量清理；若上次中断留下某夹的 full 游标（如触顶
+                     大夹首次收敛被打断），先跳跃到该夹续扫，再继续处理其后各夹。
+   两种模式共用同一套：断点定位、游标管理（只清本夹）、进度/基线落盘。 */
+async function runSyncPass(folders, forceFull) {
   const total = folders.length;
   if (!total) return;
 
@@ -549,30 +563,59 @@ async function runDiffPass(folders) {
     for (const id of it.folderIds) localCount.set(id, (localCount.get(id) || 0) + 1);
   }
 
-  let idx = 0;
-  // 续传跳跃：若存在上次中断（PAUSE/412/重试）残留的“全量扫描”游标且目标夹在
-  // 本次列表中，则直接从该夹开始处理——它之前的夹在中断前已完成（基线已落盘），
-  // 不重复 diff，也就不会让前面的小夹再次消耗配额/覆盖游标（否则大夹永远差几页，
-  // 且每次自动续传都从头重扫，形成“暂停→从头→再暂停”的循环）。
-  const resumePos = (() => {
-    const c = mem.syncCursor;
-    if (!c || !c.mediaId || c.full !== true) return -1;
-    if ((Date.now() - (c.updatedAt || 0)) >= CFG.CURSOR_TTL_MS) return -1;
-    return folders.findIndex(f => f.mediaId === c.mediaId);
-  })();
-  const startIdx = resumePos >= 0 ? resumePos : 0;
-  if (startIdx > 0) log('差异检测从中断夹续起：', folders[startIdx].title, '（pn=' + (mem.syncCursor.pn || 1) + '）');
+  // 断点定位：上次中断（PAUSE/412/重试）残留的游标指向某夹的扫描进度。
+  // 只认 full 游标（增量不写游标）；目标夹仍在本次列表才续起，否则丢弃。
+  let resume = null;
+  let startIdx = 0;
+  if (mem.syncCursor && mem.syncCursor.mediaId && mem.syncCursor.full === true) {
+    const age = Date.now() - (mem.syncCursor.updatedAt || 0);
+    if (age < CFG.CURSOR_TTL_MS) {
+      const pos = folders.findIndex(f => f.mediaId === mem.syncCursor.mediaId);
+      if (pos >= 0) { startIdx = pos; resume = mem.syncCursor; }
+    }
+  }
+  if (!resume && mem.syncCursor) await persistCursor(null);   // 游标失效/不在列表：丢弃
+  const sessionFull = resume ? !!resume.sessionFull : forceFull;
+  if (startIdx > 0) log('同步会话从中断夹续起：', folders[startIdx].title, '（pn=' + ((resume && resume.pn) || 1) + '）');
 
   for (let i = startIdx; i < folders.length; i++) {
     const folder = folders[i];
     if (cancelSync) throw Object.assign(new Error('cancel'), { kind: 'STOP' });
-    idx = i + 1;
-    if (folder.readable === false) continue;
+    const idx = i + 1;
+    if (folder.readable === false) {
+      // 不可读夹不扫描；若中断游标恰好指向它，说明该夹不可能在续扫中，清掉避免死跳
+      await clearOwnCursorIf(folder);
+      continue;
+    }
+    const isResumeFolder = !!(resume && i === startIdx);
+
+    // —— 全量周期：每夹直接全量扫（中断夹从游标 pn 续扫）——
+    if (forceFull) {
+      const startPn = isResumeFolder && resume && resume.pn ? resume.pn : 1;
+      log('开始同步夹:', idx + '/' + total, folder.title, '(' + folder.mediaId + ') 全量');
+      flowCtx = { folderTitle: folder.title, folderIndex: idx, folderTotal: total, phase: '全量' };
+      setFlow(`同步中 ${idx}/${total}：「${folder.title}」`);
+      await syncOneFolder(folder, { full: true, sessionFull, startPn });
+      // 只清“属于本夹”的游标：本夹已完成；别的夹（若有）的断点保留。
+      await clearOwnCursorIf(folder);
+      // 全量扫描完成即记录基线，防止下一轮差异检测把刚收敛的幽灵/触顶大夹
+      // （local<mediaCount）误判为“首次收敛”再白跑一轮全量。
+      folder.diffLocal = countFolderLocal(folder.mediaId);
+      folder.diffMedia = folder.mediaCount || 0;
+      await persistFolders();
+      pushView();
+      resume = null;
+      if (!latestHomeTabId) return;        // 页面全关，中断
+      continue;
+    }
+
+    // —— 差异会话：先零请求快判，必要时 ids 精核 ——
     const local = localCount.get(folder.mediaId) || 0;
     flowCtx = { folderTitle: folder.title, folderIndex: idx, folderTotal: total, phase: '差异检测' };
     setFlow(`差异检测 ${idx}/${total}：「${folder.title}」`);
 
     if (local === (folder.mediaCount || 0)) {
+      await clearOwnCursorIf(folder);
       folder.lastSyncAt = Date.now() / 1000;   // 无差异：不打任何接口
       continue;
     }
@@ -584,6 +627,7 @@ async function runDiffPass(folders) {
     const mNow = folder.mediaCount || 0;
     if ((folder.diffGhost === true || folder.diffCapped === true) &&
         folder.diffLocal === local && folder.diffMedia === mNow) {
+      await clearOwnCursorIf(folder);
       folder.lastSyncAt = Date.now() / 1000;
       continue;
     }
@@ -612,6 +656,7 @@ async function runDiffPass(folders) {
         // 但 baseSame 场景（如 ids 含本地拉不到的失效条目，videos>local 恒定）此前不会设
         // diffGhost → 每轮仍打 ids。这里补设，让下一轮走快通道免探测。
         if (!capped) folder.diffGhost = true;
+        await clearOwnCursorIf(folder);
         folder.lastSyncAt = Date.now() / 1000;
         await persistFolders();
         continue;
@@ -623,6 +668,7 @@ async function runDiffPass(folders) {
         folder.diffLocal = local;
         folder.diffMedia = mNow;
         folder.diffGhost = true;
+        await clearOwnCursorIf(folder);
         folder.lastSyncAt = Date.now() / 1000;
         await persistFolders();
         continue;
@@ -655,6 +701,7 @@ async function runDiffPass(folders) {
           act = '全量（内部漂移）';
           log('触顶大夹 → 内部漂移，全量:', folder.title, '| 本地', local, '| 官方总数', m);
         } else {
+          await clearOwnCursorIf(folder);
           folder.lastSyncAt = Date.now() / 1000;
           continue;   // 基线已代表当前状态，无动作
         }
@@ -678,7 +725,7 @@ async function runDiffPass(folders) {
       // 只清“属于本夹”的游标：若 syncOneFolder 前 mem.syncCursor 指向的是别的夹
       // （大夹中断续传点），清掉会丢掉断点 → 下轮又从头全量。本夹正常完成后，
       // 若游标属于本夹（full 扫描残留）则清空表示该夹已完成。
-      if (mem.syncCursor && mem.syncCursor.mediaId === folder.mediaId) await persistCursor(null);
+      await clearOwnCursorIf(folder);
       // 记录稳定基线（官方视频数 / 补齐后的本地真实数 / 官方总数）
       folder.diffIds = videos;
       folder.diffLocal = countFolderLocal(folder.mediaId);
@@ -693,11 +740,12 @@ async function runDiffPass(folders) {
     } else if (j.code === -403 || j.code === -404) {
       folder.readable = false;
       folder.error = '该收藏夹暂不可读（可能为私密夹）';
+      await clearOwnCursorIf(folder);   // 不可读夹无续传意义
       await persistFolders();
       continue;
     } else {
       log('差异检测跳过（ids 请求异常）:', folder.title, res.ok ? ('code=' + j.code) : (res.error || ''));
-      continue;   // 本次检不了就留到下一轮
+      continue;   // 本次检不了就留到下一轮（不清游标：下次仍可从中断点续）
     }
   }
   flowCtx = null;
@@ -774,45 +822,15 @@ async function runRefresh() {
     const fullCycle = needFullCycle();
     mem.pendingFull = false;
 
-    if (!fullCycle) {
-      // 增量 = 差异检测 + 针对性补齐（不普查；一致的夹不产生请求）
-      await runDiffPass(list);
-      refreshAttempts = 0;
-      setFlow('同步完成 ✓');
-      mem.meta.lastSyncAt = Date.now() / 1000;
-      mem.meta.syncedOnce = true;
-      if (mem.pendingDailyRun) { mem.meta.autoSyncKey = todayKey(); mem.pendingDailyRun = false; }
-      await persistMeta();
-      await persistCursor(null);
-      pushView();
-      return;
-    }
-
-    // 断点游标（若属于当前会话且未过期）
-    let resume = null;
-    let startIdx = 0;
-    if (mem.syncCursor && mem.syncCursor.mediaId) {
-      const age = Date.now() - (mem.syncCursor.updatedAt || 0);
-      if (age < CFG.CURSOR_TTL_MS && list.length > 0) {
-        const pos = list.findIndex(f => f.mediaId === mem.syncCursor.mediaId);
-        if (pos >= 0) { startIdx = pos; resume = mem.syncCursor; }
-      }
-      if (!resume) await persistCursor(null);
-    }
-    // 本次会话“是否全量”：续传时沿用断点记录的会话语义，否则按周期判断
-    let sessionFull = fullCycle;
-    if (resume) sessionFull = !!resume.sessionFull;
-
-    const doneTotal = list.length;
+    // 空列表：可能确实没有启用夹（刚拉成功则结束首次同步），也可能是列表还没拿到。
+    // 区分处理，避免把“拉不到列表”误标成已完成。
     if (list.length === 0) {
       const listJustOk = mem.meta.foldersSyncedAt && (Date.now() - mem.meta.foldersSyncedAt * 1000) < 5 * 60 * 1000;
       if (listJustOk) {
-        // 列表刚成功拉取过（可能确实没有收藏夹/全部关闭）→ 结束“首次同步”状态
         mem.meta.lastSyncAt = Date.now() / 1000;
         mem.meta.syncedOnce = true;
         await persistMeta();
       } else {
-        // 列表还没拿到：计入失败次数，由 finally 决定是否继续自动重试
         refreshAttempts++;
         if (refreshAttempts >= 8) setFlow('多次获取收藏夹失败，请查看扩展 Service Worker 日志');
         else setFlow('尚未获取到收藏夹，稍后自动重试…');
@@ -821,27 +839,9 @@ async function runRefresh() {
       return;
     }
 
-    for (let i = startIdx; i < list.length; i++) {
-      const folder = list[i];
-      const cont = (resume && resume.mediaId === folder.mediaId && i === startIdx) ? resume : null;
-      const full = cont ? !!cont.full : sessionFull;
-      log('开始同步夹:', (i + 1) + '/' + doneTotal, folder.title, '(' + folder.mediaId + ')', full ? '全量' : '增量');
-      flowCtx = { folderTitle: folder.title, folderIndex: i + 1, folderTotal: doneTotal, phase: full ? '全量' : '增量' };
-      setFlow(`同步中 ${i + 1}/${doneTotal}：「${folder.title}」`);
-      await syncOneFolder(folder, { full, sessionFull, startPn: cont ? cont.pn : 1 });
-      await persistCursor(null);           // 该夹已完成
-      // 全量扫描完成即记录基线（diffLocal/diffMedia），防止下一轮差异检测把刚收敛的
-      // 幽灵/触顶大夹（local<mediaCount）误判为“首次收敛”再白跑一轮全量。
-      // diffIds 不在此设：本路径未打 ids，capped 分支判断只依赖 diffMedia/diffLocal。
-      if (full) {
-        folder.diffLocal = countFolderLocal(folder.mediaId);
-        folder.diffMedia = folder.mediaCount || 0;
-        await persistFolders();
-      }
-      if (cont) resume = null;
-      pushView();                          // 每夹推一次进度
-      if (!latestHomeTabId) return;        // 页面全关，中断
-    }
+    // 统一同步会话：全量周期（fullCycle=true）或差异会话都走 runSyncPass，
+    // 断点续传/游标管理/基线落盘在此函数内统一处理，避免两套循环行为分叉。
+    await runSyncPass(list, fullCycle);
 
     refreshAttempts = 0;
     setFlow('同步完成 ✓');
