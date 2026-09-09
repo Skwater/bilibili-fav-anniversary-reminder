@@ -381,7 +381,8 @@ function mergeMedia(folderId, m) {
 
 async function syncOneFolder(folder, opts) {
   const full = !!opts.full;
-  let pn = opts.startPn || 1;
+  const startPn = opts.startPn || 1;   // 本次调用起始页（断点续传时>1），供清理安全判断用
+  let pn = startPn;
   const mediaId = folder.mediaId;
 
   // 增量停止用：本夹在本次同步前已知的键集合
@@ -455,12 +456,16 @@ async function syncOneFolder(folder, opts) {
       pn++;
       // 跨段累积已确认 keys（仅全量；增量到已知边界即停，无需跨段记忆）：
       // 断点/中断/被杀后，完成段的清理基于各段全集，不会误删前段条目。
-      const cur = {
-        updatedAt: Date.now(), mediaId, pn, full,
-        sessionFull: opts.sessionFull === undefined ? full : !!opts.sessionFull
-      };
-      if (full) cur.accumSeen = Array.from(seen);
-      await persistCursor(cur);
+      // 注意：只有全量扫描才写游标——增量模式（full=false）几页内到已知边界即停，
+      // 不需要断点；若在跑别的夹的中断续传时让增量覆盖/清空游标，会丢掉续传点。
+      if (full) {
+        const cur = {
+          updatedAt: Date.now(), mediaId, pn, full,
+          sessionFull: opts.sessionFull === undefined ? full : !!opts.sessionFull
+        };
+        cur.accumSeen = Array.from(seen);
+        await persistCursor(cur);
+      }
       // 单段配额：跑满自动暂停（游标已存，暂停后从下一页续传），避免顶到隐形风控配额
       if (++pageBudgetUsed >= burstLimit) {
         log('单段配额用完（', pageBudgetUsed, ' 页），暂停本轮');
@@ -545,9 +550,23 @@ async function runDiffPass(folders) {
   }
 
   let idx = 0;
-  for (const folder of folders) {
+  // 续传跳跃：若存在上次中断（PAUSE/412/重试）残留的“全量扫描”游标且目标夹在
+  // 本次列表中，则直接从该夹开始处理——它之前的夹在中断前已完成（基线已落盘），
+  // 不重复 diff，也就不会让前面的小夹再次消耗配额/覆盖游标（否则大夹永远差几页，
+  // 且每次自动续传都从头重扫，形成“暂停→从头→再暂停”的循环）。
+  const resumePos = (() => {
+    const c = mem.syncCursor;
+    if (!c || !c.mediaId || c.full !== true) return -1;
+    if ((Date.now() - (c.updatedAt || 0)) >= CFG.CURSOR_TTL_MS) return -1;
+    return folders.findIndex(f => f.mediaId === c.mediaId);
+  })();
+  const startIdx = resumePos >= 0 ? resumePos : 0;
+  if (startIdx > 0) log('差异检测从中断夹续起：', folders[startIdx].title, '（pn=' + (mem.syncCursor.pn || 1) + '）');
+
+  for (let i = startIdx; i < folders.length; i++) {
+    const folder = folders[i];
     if (cancelSync) throw Object.assign(new Error('cancel'), { kind: 'STOP' });
-    idx++;
+    idx = i + 1;
     if (folder.readable === false) continue;
     const local = localCount.get(folder.mediaId) || 0;
     flowCtx = { folderTitle: folder.title, folderIndex: idx, folderTotal: total, phase: '差异检测' };
@@ -656,7 +675,10 @@ async function runDiffPass(folders) {
       }
       setFlow(`补全差异 ${idx}/${total}：「${folder.title}」${full ? '（全量）' : '（增量补新）'}`);
       await syncOneFolder(folder, { full, startPn, sessionFull: true });
-      await persistCursor(null);
+      // 只清“属于本夹”的游标：若 syncOneFolder 前 mem.syncCursor 指向的是别的夹
+      // （大夹中断续传点），清掉会丢掉断点 → 下轮又从头全量。本夹正常完成后，
+      // 若游标属于本夹（full 扫描残留）则清空表示该夹已完成。
+      if (mem.syncCursor && mem.syncCursor.mediaId === folder.mediaId) await persistCursor(null);
       // 记录稳定基线（官方视频数 / 补齐后的本地真实数 / 官方总数）
       folder.diffIds = videos;
       folder.diffLocal = countFolderLocal(folder.mediaId);
