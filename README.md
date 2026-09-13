@@ -2,9 +2,10 @@
 
 > Chrome 扩展（Manifest V3）· 在哔哩哔哩首页提醒你收藏夹里“历史上的今天”发布的投稿。
 
+> 🛒 **一键安装**：[Chrome 应用商店 · 哔哩朝花夕拾](https://chromewebstore.google.com/detail/kgamlldkccpldahaohnbnnfdnegphppe)（当前版本 v0.1.3）
+
 打开 `https://www.bilibili.com/` 时，插件按你收藏夹内**视频投稿的发布时间**与今天（月-日）做匹配——如果若干年前的今天你收藏过某些投稿，右下角会弹出一张"X 年前的今天"卡片，点击可回到视频。
 
-> ⚠️ 当前以**个人使用**为主：仅用于本人的浏览器与账号场景验证，尚未按公开发行标准做全面打磨。
 > 非哔哩哔哩官方产品，与 B 站无任何关联；请遵守 B 站用户协议合理使用。
 > 本项目由 **DeepSeek（AI）参与设计与实现**，仅供学习交流参考。
 
@@ -26,7 +27,13 @@
 - background 通过 `chrome.scripting` 把 fetch **注入已打开的 B 站页面主世界**执行（与浏览器一致地携带登录态），因此**同步时需要至少一个 B 站页面标签页**（任意 B 站页面即可）；
 - 请求只发往 bilibili.com 系域名；数据仅存本机。
 
-## 安装（本地开发）
+## 安装
+
+**方式一：Chrome 应用商店（推荐）**
+
+前往 [哔哩朝花夕拾 · Chrome 应用商店](https://chromewebstore.google.com/detail/kgamlldkccpldahaohnbnnfdnegphppe) 点「添加至 Chrome」，之后会自动更新。
+
+**方式二：本地开发加载**
 
 1. Chrome/Edge 打开 `chrome://extensions`，右上开启「开发者模式」；
 2. 点「加载已解压的扩展程序」，选择本目录的 `extension/` 文件夹；
@@ -45,9 +52,10 @@
 ## 目录结构
 
 ```
-extension/          # 扩展本体（manifest/common/background/content/popup/options/图标）
-docs?               # 设计文档见 需求梳理.md / 开发调试说明.md（本地）
-tools/              # 占位图标生成 & 自检脚本
+extension/          # 扩展本体（manifest / common / background / content / popup / options / icons）
+tools/              # 自检脚本 selftest.js、图标生成 gen_icons.py
+assets/             # 设计源图（logo.png）；截图等素材仅本地保留，不入库
+需求梳理.md / 开发调试说明.md   # 设计与调试文档（本地，不入库）
 ```
 
 ## 开发与自检
