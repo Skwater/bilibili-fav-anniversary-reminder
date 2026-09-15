@@ -12,5 +12,6 @@ Thumbs.db
 
 # 临时
 .tmp/
+commitmsg.txt
 tools/_ref/
 node_modules/
