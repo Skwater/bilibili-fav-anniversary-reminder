@@ -103,7 +103,8 @@ function syncMiniCard(v) {
   row.appendChild(stop);
   mini.appendChild(row);
   const close = btn('×', closeState);
-  close.className = 'dsh-close dsh-close-state';
+  // 注意：不能带 dsh-close-state（那是绝对定位到右上角，会与“终止”按钮重叠）
+  close.className = 'dsh-close';
   close.title = '收起';
   mini.appendChild(close);
   return mini;

@@ -109,7 +109,16 @@
   white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
 .dsh-sync-mini .dsh-btn-stop { flex: none !important; margin-left: 0 !important; padding: 3px 10px !important;
   font-size: 12px !important; border-radius: 10px !important; color: #d54949 !important; }
-.dsh-sync-mini .dsh-close { flex: none !important; }
+/* 紧凑气泡内的 × 参与 flex 排布（不是右上角绝对定位，避免与“终止”重叠） */
+.dsh-sync-mini .dsh-close {
+  flex: none !important;
+  position: static !important;
+  top: auto !important;
+  right: auto !important;
+  font-size: 16px !important;
+  padding: 0 4px !important;
+  line-height: 1 !important;
+}
 
 /* “同步完成”过渡提示 */
 .dsh-done { padding: 16px !important; text-align: center !important; }
