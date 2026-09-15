@@ -1046,13 +1046,23 @@ async function buildView() {
   };
 }
 
-function pushView() {
-  if (homeTabs.size === 0) return;
-  buildView().then(view => {
+/* 推送视图给所有 B 站首页标签。
+   homeTabs 为空时（如 SW 重启后内存 Map 丢失）主动找回首页标签，否则 popup/设置页
+   发起的同步在首页右下角会没有任何提示（content 仅注入首页，故按首页 URL 过滤）。 */
+async function pushView() {
+  try {
+    if (homeTabs.size === 0) {
+      const tabs = await chrome.tabs.query({ url: ['https://www.bilibili.com/*'] });
+      for (const t of (tabs || [])) {
+        if (/^https:\/\/(www\.)?bilibili\.com\/?(\?.*)?$/i.test(t.url || '')) homeTabs.set(t.id, Date.now());
+      }
+    }
+    if (homeTabs.size === 0) return;
+    const view = await buildView();
     for (const tabId of homeTabs.keys()) {
       chrome.tabs.sendMessage(tabId, { type: MSG.VIEW_UPDATE, view }).catch(() => homeTabs.delete(tabId));
     }
-  }).catch(() => {});
+  } catch (e) { /* 忽略 */ }
 }
 
 /* 找一个可注入取数的 B 站标签（方案 B 只需 host 权限，任意 B 站页面均可主世界注入 fetch）：

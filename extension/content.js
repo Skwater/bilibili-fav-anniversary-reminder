@@ -92,9 +92,27 @@ function stateCard(icon, title, desc, actions) {
   return card;
 }
 
+/* 同步中的紧凑进度气泡（复用既有 dsh-sync-mini 样式） */
+function syncMiniCard(v) {
+  const mini = el('div', 'dsh-card dsh-sync-mini');
+  const row = el('div', 'dsh-sync-mini-row');
+  row.appendChild(el('span', 'dsh-sync-mini-icon', '⏳'));
+  row.appendChild(el('span', 'dsh-sync-mini-txt', v.syncLabel || v.note || '正在同步收藏夹…'));
+  const stop = btn('终止', sendCancelSync);
+  stop.className = 'dsh-btn dsh-btn-stop';
+  row.appendChild(stop);
+  mini.appendChild(row);
+  const close = btn('×', closeState);
+  close.className = 'dsh-close dsh-close-state';
+  close.title = '收起';
+  mini.appendChild(close);
+  return mini;
+}
+
 /* 收起状态卡：记住类别，后续同类别视图不再自动弹回；类别变化（如进入结果）后恢复 */
 function closeState() {
-  userClosedCat = lastCat;
+  // 同步气泡的收起只对本次生效（不跨次记忆），否则下次同步会因“曾收起”而看不到进度
+  if (lastCat !== 'syncing') userClosedCat = lastCat;
   hide();
 }
 
@@ -214,9 +232,12 @@ function render(v) {
   lastViewAt = Date.now();
 
   const dateKey = v.dateKey;
+  // 卡片类别：登录/错误优先；其次“同步中”单列一类——使用户此前收起的结果卡
+  // 不会阻止同步进度气泡弹出（popup/设置页发起的同步也要能看到提示）
   const cat = (v.loginState === 'no') ? 'login'
     : ((v.loginState === 'unknown' && v.loginError) ? 'err'
-    : (!v.syncedOnce ? 'init' : 'results'));
+    : (v.syncing ? 'syncing'
+    : (!v.syncedOnce ? 'init' : 'results')));
   if (userClosedCat && userClosedCat !== cat) userClosedCat = '';
   lastCat = cat;
   if (userClosedCat === cat) { hide(); return; }   // 用户已主动收起该状态卡：静默等待
@@ -285,6 +306,13 @@ function render(v) {
     return;
   }
 
+  // 同步中：一律显示紧凑进度气泡（不管有无命中、是否已展示过、是否模拟日期）。
+  // 同步可能是从 popup / 设置页 / 浮层发起的，右下角都应有一致的可见反馈。
+  if (v.syncing) {
+    show(syncMiniCard(v));
+    return;
+  }
+
   // 已同步过之后：同步暂停/风控冷却同样显示在浮层（等同首次的等待窗，含 刷新/立即同步）
   if (v.cooldownSec > 0 && !v.syncing) {
     show(cooldownCardView(v));
@@ -299,26 +327,8 @@ function render(v) {
     return;
   }
 
-  // 4. 命中结果
+  // 4. 命中结果（“同步中”已在上方气泡分支返回）
   const hits = v.hits || [];
-  // 同步进行中且当前无命中：显示紧凑进度卡（完成且无命中后自动隐藏）
-  if (v.syncing && !hits.length && !v.simulated) {
-    const mini = el('div', 'dsh-card dsh-sync-mini');
-    const row = el('div', 'dsh-sync-mini-row');
-    row.appendChild(el('span', 'dsh-sync-mini-icon', '⏳'));
-    row.appendChild(el('span', 'dsh-sync-mini-txt', v.syncLabel || v.note || '正在同步收藏夹…'));
-    const stop = btn('终止', sendCancelSync);
-    stop.className = 'dsh-btn dsh-btn-stop';
-    row.appendChild(stop);
-    mini.appendChild(row);
-    const close = btn('×', closeState);
-    close.className = 'dsh-close dsh-close-state';
-    close.title = '收起';
-    mini.appendChild(close);
-    show(mini);
-    return;
-  }
-  const inSyncNote = v.syncing ? (v.syncLabel || '') : '';
   const card = el('div', 'dsh-card dsh-results');
 
   const head = el('div', 'dsh-head');
@@ -339,8 +349,6 @@ function render(v) {
   closeBtn.className = 'dsh-close';
   head.appendChild(closeBtn);
   card.appendChild(head);
-
-  if (inSyncNote) card.appendChild(el('div', 'dsh-syncnote', inSyncNote));
 
   if (hits.length) {
     const list = el('div', 'dsh-list');
