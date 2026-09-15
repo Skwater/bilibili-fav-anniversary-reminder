@@ -546,7 +546,9 @@ chrome.runtime.onMessage.addListener((msg) => {
     }
   }, true);
 
-  requestHome();
+  // 打开页面后延迟 BOOT_DELAY_MS 再首次请求视图：给登录态探测与页面稳定留时间，
+  // 避免加载初期出现“未登录→已登录”的闪变（此期间 .dsh-host 保持隐藏）。
+  setTimeout(requestHome, CFG.BOOT_DELAY_MS);
   // 兜底看门狗（每 9 秒）：
   //  1) “自动同步模式”下首次同步长时间未开始 → 再触发一次首页流程；
   //  2) 提示词含 续传/冷却/暂停（配额或风控暂停中）且长时间无新状态 → 主动催一次后台：

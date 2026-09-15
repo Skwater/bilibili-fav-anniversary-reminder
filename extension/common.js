@@ -42,7 +42,8 @@ const CFG = {
   BURST_PAGES: 120,                 // 每段默认页数配额（设置页可改）
   BURST_PAUSE_MS: 5 * 60 * 1000,    // 配额跑满后的默认暂停：5 分钟（设置页可改）
   PROXY_TIMEOUT_MS: 20000,          // 单次代发请求超时
-  CURSOR_TTL_MS: 6 * 3600 * 1000    // 断点游标有效期
+  CURSOR_TTL_MS: 6 * 3600 * 1000,   // 断点游标有效期
+  BOOT_DELAY_MS: 3500               // 打开首页后延迟首次显示浮层（避开“未登录”闪变）
 };
 
 const MSG = {
