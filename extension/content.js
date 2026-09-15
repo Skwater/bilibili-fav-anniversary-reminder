@@ -505,6 +505,13 @@ function initWizardCard(v) {
 /* 开始同步“所选收藏夹”（首次，全量） */
 function startSyncSelected(ids) {
   if (!ids || !ids.length) return;
+  // 全量耗时提醒：选中夹官方条目数之和超过阈值时，先确认再开始
+  const sel = new Set(ids);
+  const total = ((view && view.foldersDetailed) || [])
+    .filter(f => sel.has(f.mediaId))
+    .reduce((s, f) => s + (f.mediaCount || 0), 0);
+  if (total > CFG.FULL_SYNC_CONFIRM_THRESHOLD &&
+      !confirm(`本次全量同步将处理约 ${total} 条收藏，可能需要较长时间，是否继续？`)) return;
   initUserStarted = true;
   show(stateCard('⏳', '开始同步…', '正在同步所选收藏夹…', []));
   try {

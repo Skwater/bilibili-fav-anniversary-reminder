@@ -209,7 +209,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   await refreshAll();
 
   $('btnSync').addEventListener('click', () => { msg({ type: MSG.SYNC_NOW, full: false, scope: syncScope }); });
-  $('btnFull').addEventListener('click', () => { msg({ type: MSG.SYNC_NOW, full: true, scope: syncScope }); });
+  $('btnFull').addEventListener('click', async () => {
+    // 全量耗时提醒：启用夹官方条目数之和超过阈值时，先确认再开始
+    const v = view || await getView();
+    const total = ((v && v.foldersDetailed) || [])
+      .filter(f => f.enabled)
+      .reduce((s, f) => s + (f.mediaCount || 0), 0);
+    if (total > CFG.FULL_SYNC_CONFIRM_THRESHOLD &&
+        !confirm(`本次全量同步将处理约 ${total} 条收藏，可能需要较长时间，是否继续？`)) return;
+    msg({ type: MSG.SYNC_NOW, full: true, scope: syncScope });
+  });
   $('btnRefreshFolders').addEventListener('click', async () => {
     const r = await msg({ type: MSG.REFRESH_FOLDERS });
     if (r && r.cooldown) $('syncStatus').textContent = '冷却中，稍后再刷新收藏夹列表。';
