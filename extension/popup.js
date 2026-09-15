@@ -144,6 +144,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const n = $('syncNote');
         n.style.display = 'block';
         n.textContent = cooldownText(r.seconds, r.reason);
+      } else if (r && r.busy) {
+        const n = $('syncNote');
+        n.style.display = 'block';
+        n.textContent = '已有同步正在进行中。';
       }
     });
   });
@@ -157,12 +161,18 @@ function syncNow(full) {
   // 全量耗时提醒：启用夹官方条目数之和超过阈值时，先确认再开始
   if (full && view) {
     const total = (view.foldersDetailed || [])
-      .filter(f => f.enabled)
+      .filter(f => f.enabled && (syncScope === 'all' || f.source === syncScope))
       .reduce((s, f) => s + (f.mediaCount || 0), 0);
     if (total > CFG.FULL_SYNC_CONFIRM_THRESHOLD &&
         !confirm(`本次全量同步将处理约 ${total} 条收藏，可能需要较长时间，是否继续？`)) return;
   }
   chrome.runtime.sendMessage({ type: MSG.SYNC_NOW, full, scope: syncScope }, r => {
+    if (r && r.busy) {
+      const note = $('syncNote');
+      note.style.display = 'block';
+      note.textContent = '已有同步正在进行中。';
+      return;
+    }
     if (r && r.cooldown) {
       // 冷却中：给可见提示，不轮询（区分 412 风控 / 配额暂停）
       const note = $('syncNote');

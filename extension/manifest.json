@@ -6,7 +6,8 @@
   "minimum_chrome_version": "116",
   "permissions": [
     "storage",
-    "scripting"
+    "scripting",
+    "alarms"
   ],
   "host_permissions": [
     "https://*.bilibili.com/*"

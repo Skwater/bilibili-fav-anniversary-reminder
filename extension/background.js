@@ -16,6 +16,7 @@ let loaded = false;
 const mem = {
   meta: {}, folders: [], items: {}, settings: null,
   syncCursor: null,       // 断点游标（持久化于 KEY_SYNC）
+  syncSession: null,      // 未完成会话：模式/范围/目标夹，跨 SW 重启保持
   pendingFull: false,     // 本次 refresh 强制全量
   pendingDailyRun: false, // 本次 refresh 来自“每天一次”自动触发（成功后记当日标记）
   pendingScope: 'all',    // 本次 refresh 的范围：'all' 全部 / 'created' 仅自建 / 'collected' 仅追更
@@ -34,7 +35,6 @@ const loginInfo = {
 const homeTabs = new Map();   // tabId -> lastSeen
 let latestHomeTabId = null;
 let refreshBusy = false;
-let refreshQueued = false;
 let proxySeq = 0;
 let flowCtx = null;           // 当前同步会话现场（进度展示用）
 let flowNote = '';            // 人类可读的同步阶段（展示在浮层/弹窗，方便定位卡点）
@@ -45,6 +45,15 @@ let pageBudgetUsed = 0;       // 本段已消耗的页数（配额控制）
 let burstLimit = CFG.BURST_PAGES;   // 每段页数配额（设置页可调）
 let forceSkipCooldown = false;      // 用户点击“立即同步”：跳过冷却直接开跑（接受再次被 412 的风险）
 let cancelSync = false;             // 用户请求终止当前同步
+let clearAfterSync = false;         // 同步停稳后清空全部数据
+let loginCheckPromise = null;       // 登录检查 single-flight
+const RESUME_ALARM = 'dsh-sync-resume';
+let viewPushTimer = null;
+
+function schedulePushView() {
+  clearTimeout(viewPushTimer);
+  viewPushTimer = setTimeout(() => { viewPushTimer = null; pushView(); }, 120);
+}
 
 function setFlow(note) { flowNote = note; }
 
@@ -69,6 +78,7 @@ async function holdUntil(ms, reason) {
   mem.meta.resumeReason = reason;
   pauseReason = reason;
   await persistMeta();
+  try { await chrome.alarms.create(RESUME_ALARM, { when: rateUntil + 1000 }); } catch (e) {}
 }
 async function clearHold() {
   rateUntil = 0;
@@ -76,6 +86,7 @@ async function clearHold() {
   delete mem.meta.resumeReason;
   pauseReason = '';
   await persistMeta();
+  try { await chrome.alarms.clear(RESUME_ALARM); } catch (e) {}
 }
 
 /* 仅当“发送者就是 B 站页面”（content 向导 / popup 恰好点在 B 站标签上）才复用；
@@ -115,27 +126,84 @@ async function ensureLoaded() {
   mem.settings = Object.assign({}, CFG.DEFAULT_SETTINGS, o[CFG.KEY_SETTINGS] || {});
   const sy = o[CFG.KEY_SYNC] || {};
   mem.syncCursor = (sy.cursor && typeof sy.cursor === 'object') ? sy.cursor : null;
+  mem.syncSession = (sy.session && typeof sy.session === 'object') ? sy.session : null;
   loaded = true;
+  if ((mem.meta.resumeAt || 0) > Date.now()) {
+    try { await chrome.alarms.create(RESUME_ALARM, { when: mem.meta.resumeAt + 1000 }); } catch (e) {}
+  }
 }
 
-/* 其它上下文改了存储 -> 刷新内存缓存并推送新视图 */
+/* background 是 meta/folders/items/sync 的唯一写入者，不能在自己的 storage
+   回调里用结构化克隆替换正在同步的对象引用。设置页仍直接保存独立的 settings，
+   因此这里只接收 settings 的跨上下文变更。 */
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
-  const map = {};
-  for (const k of Object.keys(changes)) map[k] = changes[k].newValue;
-  if (CFG.KEY_META in map) mem.meta = map[CFG.KEY_META] || {};
-  if (CFG.KEY_FOLDERS in map) mem.folders = Array.isArray(map[CFG.KEY_FOLDERS]) ? map[CFG.KEY_FOLDERS] : [];
-  if (CFG.KEY_ITEMS in map) mem.items = map[CFG.KEY_ITEMS] || {};
-  if (CFG.KEY_SETTINGS in map) mem.settings = Object.assign({}, CFG.DEFAULT_SETTINGS, map[CFG.KEY_SETTINGS] || {});
-  if (CFG.KEY_SYNC in map) mem.syncCursor = (map[CFG.KEY_SYNC] && map[CFG.KEY_SYNC].cursor) || null;
-  loaded = true;
-  pushView();
+  if (CFG.KEY_SETTINGS in changes) {
+    mem.settings = Object.assign({}, CFG.DEFAULT_SETTINGS, changes[CFG.KEY_SETTINGS].newValue || {});
+    schedulePushView();
+  }
 });
 
 function persistMeta() { return storageSet({ [CFG.KEY_META]: mem.meta }); }
 function persistFolders() { return storageSet({ [CFG.KEY_FOLDERS]: mem.folders }); }
 function persistItems() { return storageSet({ [CFG.KEY_ITEMS]: mem.items }); }
-function persistCursor(cursor) { mem.syncCursor = cursor; return storageSet({ [CFG.KEY_SYNC]: { cursor: cursor || null } }); }
+function syncStateValue() { return { cursor: mem.syncCursor || null, session: mem.syncSession || null }; }
+function persistCursor(cursor) {
+  mem.syncCursor = cursor || null;
+  return storageSet({ [CFG.KEY_SYNC]: syncStateValue() });
+}
+function persistSession(session) {
+  mem.syncSession = session || null;
+  return storageSet({ [CFG.KEY_SYNC]: syncStateValue() });
+}
+/* items 与 cursor 同批提交：游标绝不能越过尚未落盘的数据页。 */
+function persistCheckpoint(cursor) {
+  mem.syncCursor = cursor || null;
+  if (mem.syncSession) mem.syncSession.updatedAt = Date.now();
+  return storageSet({
+    [CFG.KEY_ITEMS]: mem.items,
+    [CFG.KEY_SYNC]: syncStateValue()
+  });
+}
+function clearSyncState() {
+  mem.syncCursor = null;
+  mem.syncSession = null;
+  return storageSet({ [CFG.KEY_SYNC]: syncStateValue() });
+}
+
+function clearPendingRequests() {
+  mem.pendingFull = false;
+  mem.pendingDailyRun = false;
+  mem.pendingScope = 'all';
+  mem.pendingManual = false;
+  mem.pendingFolderIds = null;
+  mem.pendingFoldersOnly = false;
+  delete mem.meta.pendingFoldersOnly;
+  forceSkipCooldown = false;
+}
+
+async function resetAllData() {
+  try { await chrome.alarms.clear(RESUME_ALARM); } catch (e) {}
+  await chrome.storage.local.remove([
+    CFG.KEY_META, CFG.KEY_FOLDERS, CFG.KEY_ITEMS, CFG.KEY_SYNC, CFG.KEY_SETTINGS
+  ]);
+  mem.meta = {};
+  mem.folders = [];
+  mem.items = {};
+  mem.settings = Object.assign({}, CFG.DEFAULT_SETTINGS);
+  mem.syncCursor = null;
+  mem.syncSession = null;
+  clearPendingRequests();
+  loginInfo.mid = 0;
+  loginInfo.ok = false;
+  loginInfo.error = '';
+  loginInfo.checkedAt = 0;
+  loginInfo.failedAt = 0;
+  rateUntil = 0;
+  pauseReason = '';
+  flowCtx = null;
+  setFlow('本地数据已清空');
+}
 
 /* 参与同步/匹配的收藏夹：仅看用户开关；不可读的夹仍每轮重试（成功即恢复） */
 function enabledFolders() { return mem.folders.filter(f => f.enabled !== false); }
@@ -147,14 +215,20 @@ function enabledFolders() { return mem.folders.filter(f => f.enabled !== false);
  * 扩展自身不读取、不存储任何 Cookie，凭据由浏览器自动携带。
  */
 /* 该函数会被序列化注入 MAIN world 执行，必须自包含 */
-function mainFetch(url) {
-  return fetch(url, { credentials: 'include' })
+function mainFetch(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs || 20000);
+  return fetch(url, { credentials: 'include', signal: controller.signal })
     .then(async r => {
       let json = null;
       try { json = await r.json(); } catch (e) { json = null; }
       return { ok: r.ok, status: r.status, json };
     })
-    .catch(err => ({ ok: false, error: String((err && err.message) || err) }));
+    .catch(err => ({
+      ok: false,
+      error: err && err.name === 'AbortError' ? 'TIMEOUT' : String((err && err.message) || err)
+    }))
+    .finally(() => clearTimeout(timer));
 }
 
 function contentProxyFetch(url) {
@@ -187,7 +261,7 @@ async function proxyFetch(url) {
         target: { tabId },
         world: 'MAIN',
         func: mainFetch,
-        args: [url]
+        args: [url, CFG.PROXY_TIMEOUT_MS]
       });
       const r = results && results[0] && results[0].result;
       if (r) return r;   // { ok, status, json } 或 { ok:false, error }
@@ -219,45 +293,62 @@ async function proxyFetch(url) {
    - 成功后缓存 10 分钟；未确认/未登录只短缓存 30 秒，便于自动恢复。 */
 async function refreshLogin(force) {
   const now = Date.now();
-  if (loginInfo.checking) return;   // 已有一次检查在飞行中，避免并发
+  if (loginCheckPromise) return loginCheckPromise; // 所有调用者等待同一次检查，不能读取旧结论
   if (!force) {
     const last = Math.max(loginInfo.checkedAt || 0, loginInfo.failedAt || 0);
     const ttl = loginInfo.ok ? CFG.NAV_REFRESH_MS : CFG.NAV_FAIL_RETRY_MS;
     if (last && (now - last) < ttl) return;
   }
-  loginInfo.checking = true;
-  setFlow('正在检查登录状态…');
-  let res = null;
-  try {
-    res = await proxyFetch(CFG.API.NAV);
-  } catch (e) {
-    res = { ok: false, error: String((e && e.message) || e) };
-  }
-  loginInfo.checking = false;
+  const task = (async () => {
+    loginInfo.checking = true;
+    setFlow('正在检查登录状态…');
+    let res = null;
+    try {
+      res = await proxyFetch(CFG.API.NAV);
+    } catch (e) {
+      res = { ok: false, error: String((e && e.message) || e) };
+    }
 
-  if (!res || !res.ok) {
-    // 连接失败（注入失败/超时/找不到标签）：不是未登录 —— 不写 checkedAt、不清 mid
-    loginInfo.ok = false;
-    loginInfo.error = (res && res.error === 'NO_HOME_TAB')
-      ? '未找到可用的哔哩哔哩页面标签'
-      : ('请求失败: ' + ((res && (res.error || res.status)) || '未知错误'));
-    loginInfo.failedAt = Date.now();
-    setFlow('无法连接 B 站接口：' + loginInfo.error);
-    log('登录检查失败（按“未知”处理，不算未登录）：', loginInfo.error);
-    return;
-  }
-  const j = res.json || {};
-  if (j.code === 0 && j.data && j.data.isLogin) {
-    loginInfo.ok = true; loginInfo.mid = j.data.mid || 0; loginInfo.error = '';
-    loginInfo.checkedAt = Date.now(); loginInfo.failedAt = 0;
-    setFlow('已登录，准备读取收藏夹…');
-    mem.meta.mid = loginInfo.mid; await persistMeta();
-  } else {
-    // 明确未登录（isLogin=false / -101 等）
-    loginInfo.ok = false; loginInfo.mid = 0; loginInfo.error = '';
-    loginInfo.checkedAt = Date.now(); loginInfo.failedAt = 0;
-    setFlow('未登录哔哩哔哩');
-    mem.meta.mid = 0; await persistMeta();
+    if (!res || !res.ok) {
+      // 连接失败（注入失败/超时/找不到标签）：不是未登录 —— 不写 checkedAt、不清 mid
+      loginInfo.ok = false;
+      loginInfo.checkedAt = 0;
+      loginInfo.error = (res && res.error === 'NO_HOME_TAB')
+        ? '未找到可用的哔哩哔哩页面标签'
+        : ('请求失败: ' + ((res && (res.error || res.status)) || '未知错误'));
+      loginInfo.failedAt = Date.now();
+      setFlow('无法连接 B 站接口：' + loginInfo.error);
+      log('登录检查失败（按“未知”处理，不算未登录）：', loginInfo.error);
+      return;
+    }
+    const j = res.json || {};
+    if (j.code === 0 && j.data && j.data.isLogin === true) {
+      loginInfo.ok = true; loginInfo.mid = j.data.mid || 0; loginInfo.error = '';
+      loginInfo.checkedAt = Date.now(); loginInfo.failedAt = 0;
+      setFlow('已登录，准备读取收藏夹…');
+      mem.meta.mid = loginInfo.mid; await persistMeta();
+    } else if (j.code === -101 || (j.code === 0 && j.data && j.data.isLogin === false)) {
+      // 只有 nav 明确给出未登录结论时才清登录痕迹；验证码/风控/业务异常均属未知。
+      loginInfo.ok = false; loginInfo.mid = 0; loginInfo.error = '';
+      loginInfo.checkedAt = Date.now(); loginInfo.failedAt = 0;
+      setFlow('未登录哔哩哔哩');
+      mem.meta.mid = 0; await persistMeta();
+    } else {
+      loginInfo.ok = false;
+      loginInfo.checkedAt = 0;
+      loginInfo.error = '登录接口返回异常: code=' + (j.code == null ? '未知' : j.code) +
+        (j.message ? ' ' + j.message : '');
+      loginInfo.failedAt = Date.now();
+      setFlow('无法确认登录状态：' + loginInfo.error);
+      log('登录检查返回非明确结论（按“未知”处理）：', loginInfo.error);
+    }
+  })();
+  loginCheckPromise = task;
+  try {
+    return await task;
+  } finally {
+    loginInfo.checking = false;
+    if (loginCheckPromise === task) loginCheckPromise = null;
   }
 }
 
@@ -268,11 +359,11 @@ async function ensureFolderList(force) {
     mem.folders.length === 0 ||
     !mem.meta.foldersSyncedAt ||
     (Date.now() - mem.meta.foldersSyncedAt * 1000) > CFG.FOLDER_LIST_REFRESH_MS;
-  if (!need) return;
+  if (!need) return true;
 
   setFlow('正在读取收藏夹列表…');
   const mid = loginInfo.mid || mem.meta.mid || 0;
-  if (!mid) { setFlow('缺少用户 mid，无法读取收藏夹'); log('ensureFolderList: mid 缺失'); return; }
+  if (!mid) { setFlow('缺少用户 mid，无法读取收藏夹'); log('ensureFolderList: mid 缺失'); return false; }
 
   const api = 'https://api.bilibili.com/x/v3/fav/folder';
   const byId = new Map(mem.folders.map(f => [f.mediaId, f]));
@@ -300,6 +391,8 @@ async function ensureFolderList(force) {
       diffIds: old ? old.diffIds : undefined,
       diffLocal: old ? old.diffLocal : undefined,
       diffMedia: old ? old.diffMedia : undefined,
+      diffFingerprint: old ? old.diffFingerprint : undefined,
+      diffCheckedAt: old ? old.diffCheckedAt : undefined,
       // 稳定快通道标记（随重建保留）：diffGhost=官方数多出的部分是占位（本地已齐）；
       // diffCapped=ids 触顶、决策只看官方总数/本地。二者为 true 且三值基线未变时，
       // 连 ids 探测都可跳过（真正近零请求），无需每轮打探测。
@@ -333,6 +426,7 @@ async function ensureFolderList(force) {
     const ps = 20;
     let total = null;
     let fetched = 0;
+    let collectedComplete = false;
     while (pn <= 200) {
       const url = api + '/collected/list?up_mid=' + mid + '&pn=' + pn + '&ps=' + ps + '&platform=web';
       const res = await proxyFetch(url);
@@ -342,13 +436,9 @@ async function ensureFolderList(force) {
         log('收藏夹[collected] HTTP412（风控），进入冷却（已拉', fetched, '条）');
         throw Object.assign(new Error('rate 412'), { kind: 'RATE' });
       }
-      if (pn === 200) log('收藏夹[collected] 分页触顶 pn=200（已拉', fetched, '条，可能被截断）');
       if (!(res.ok && j.code === 0 && j.data && Array.isArray(j.data.list))) {
-        if (pn === 1) {
-          failCount++;
-          log('收藏夹[collected] 失败:', url, '=>',
-            res.ok ? ('code=' + j.code + ' ' + (j.message || '')) : (res.error || ('HTTP ' + res.status)));
-        }
+        log('收藏夹[collected] 第 ' + pn + ' 页失败:', url, '=>',
+          res.ok ? ('code=' + j.code + ' ' + (j.message || '')) : (res.error || ('HTTP ' + res.status)));
         break;
       }
       if (total == null) total = (j.data.count != null) ? j.data.count : 0;
@@ -358,8 +448,15 @@ async function ensureFolderList(force) {
       results.push('collected@pn' + pn);
       const hasMore = !!j.data.has_more;
       pn++;
-      if (!hasMore || list.length === 0 || (total != null && fetched >= total)) break;
+      if (!hasMore || list.length === 0 || (total != null && fetched >= total)) {
+        collectedComplete = true;
+        break;
+      }
       await sleep(CFG.PAGE_GAP_MS);
+    }
+    if (!collectedComplete) {
+      failCount++;
+      if (pn > 200) log('收藏夹[collected] 分页触顶 pn=200（已拉', fetched, '条），拒绝提交残缺列表');
     }
   }
 
@@ -369,6 +466,7 @@ async function ensureFolderList(force) {
     await persistFolders(); await persistMeta();
     setFlow('共 ' + mem.folders.length + ' 个收藏夹');
     log('收藏夹列表拉取成功:', mem.folders.length, '个 | 来源:', results.join(', '));
+    return true;
   } else if (mem.folders.length === 0) {
     setFlow('收藏夹列表拉取失败，将自动重试');
     log('收藏夹列表拉取失败（无本地缓存）');
@@ -376,6 +474,7 @@ async function ensureFolderList(force) {
     setFlow('收藏夹列表刷新失败，沿用本地缓存');
     log('收藏夹列表刷新失败，沿用旧列表');
   }
+  return false;
 }
 
 /* ---------------- 同步引擎 ---------------- */
@@ -385,13 +484,19 @@ function needFullCycle() {
   return false;                               // 不再按固定周期自动全量
 }
 
-function idKeyOf(m) { return (m.bvid && m.bvid !== '') ? m.bvid : ('a' + m.id); }
+function idKeyOf(m) {
+  if (!m) return '';
+  if (m.bvid) return String(m.bvid);
+  return m.id != null ? ('a' + m.id) : '';
+}
 
 function mergeMedia(folderId, m) {
   if (!m || (m.type !== undefined && m.type !== 2)) return null; // 只存视频稿件
   const key = idKeyOf(m);
   if (!key) return null;
-  const old = mem.items[key];
+  const aidKey = m.id != null ? ('a' + m.id) : '';
+  const old = mem.items[key] || (aidKey && mem.items[aidKey]);
+  if (aidKey && aidKey !== key && mem.items[aidKey]) delete mem.items[aidKey];
   const item = {
     aid: m.id,
     bvid: m.bvid || '',
@@ -400,7 +505,7 @@ function mergeMedia(folderId, m) {
     cover: m.cover || '',
     upperName: (m.upper && m.upper.name) || '',
     upperMid: (m.upper && m.upper.mid) || 0,
-    pubtime: m.pubtime || m.ctime || 0,   // 兼容 pubdate 场景已在字段映射说明
+    pubtime: m.pubtime || m.pubdate || m.ctime || 0,
     favTime: m.fav_time || 0,
     attr: (m.attr != null ? m.attr : 0),
     folderIds: old && Array.isArray(old.folderIds) ? old.folderIds.slice() : []
@@ -439,16 +544,22 @@ async function syncOneFolder(folder, opts) {
   }
   let pages = 0;
   let apiFailed = false;
+  let currentCursor = (full && mem.syncCursor && mem.syncCursor.mediaId === mediaId)
+    ? mem.syncCursor : null;
 
   try {
     while (true) {
       if (cancelSync) throw Object.assign(new Error('cancel'), { kind: 'STOP' });
+      if (pageBudgetUsed >= burstLimit) {
+        log('单段配额用完（', pageBudgetUsed, ' 页），暂停本轮');
+        throw Object.assign(new Error('burst quota'), { kind: 'PAUSE' });
+      }
       // 实测(2026-09)：resource/list 不能带 platform=web（会返回 HTTP 412），故不带
       const url = CFG.API.MEDIA_LIST + '?media_id=' + encodeURIComponent(mediaId) +
         '&pn=' + pn + '&ps=' + CFG.PAGE_SIZE;
       let j = null;
       let apiFail = false;
-      for (let attempt = 0; attempt < 4; attempt++) {
+      for (let attempt = 0; attempt <= CFG.MAX_RETRY; attempt++) {
         if (attempt > 0) await sleep(1500 + attempt * 1500);
         const res = await proxyFetch(url);
         if (!res.ok) {
@@ -484,6 +595,7 @@ async function syncOneFolder(folder, opts) {
         if (k) seen.add(k);
       }
       pages++;
+      pageBudgetUsed++;
       pn++;
       // 跨段累积已确认 keys（仅全量；增量到已知边界即停，无需跨段记忆）：
       // 断点/中断/被杀后，完成段的清理基于各段全集，不会误删前段条目。
@@ -492,15 +604,16 @@ async function syncOneFolder(folder, opts) {
       if (full) {
         const cur = {
           updatedAt: Date.now(), mediaId, pn, full,
-          sessionFull: opts.sessionFull === undefined ? full : !!opts.sessionFull
+          sessionFull: !!(mem.syncSession && mem.syncSession.full)
         };
         cur.accumSeen = Array.from(seen);
-        await persistCursor(cur);
-      }
-      // 单段配额：跑满自动暂停（游标已存，暂停后从下一页续传），避免顶到隐形风控配额
-      if (++pageBudgetUsed >= burstLimit) {
-        log('单段配额用完（', pageBudgetUsed, ' 页），暂停本轮');
-        throw Object.assign(new Error('burst quota'), { kind: 'PAUSE' });
+        currentCursor = cur;
+        mem.syncCursor = cur;
+        // 周期检查点把条目和游标放在同一个 storage.set 中；若 SW 在检查点之间
+        // 被回收，恢复时只会重拉少量页，不会越过尚未落盘的数据。
+        if (pages % CFG.CHECKPOINT_PAGES === 0 || !j.data.has_more) {
+          await persistCheckpoint(cur);
+        }
       }
       // 长收藏夹：每 8 页推一次进度，避免看起来卡住
       if (pages % 8 === 0) {
@@ -517,7 +630,9 @@ async function syncOneFolder(folder, opts) {
     }
   } finally {
     flowCtx = null;
-    await persistItems();
+    // 正常结束、配额暂停和可捕获异常都提交最后一批；强杀 SW 时则回退到上个原子检查点。
+    if (full && currentCursor) await persistCheckpoint(currentCursor);
+    else await persistItems();
   }
 
   if (apiFailed) {
@@ -525,7 +640,7 @@ async function syncOneFolder(folder, opts) {
     folder.error = '该收藏夹暂不可读（可能为私密夹）';
     folder.lastSyncAt = Date.now() / 1000;
     await persistFolders();
-    return;
+    return { complete: false, unreadable: true };
   }
 
   // 全量完成后清理：把已不在该夹的条目摘除该夹
@@ -550,10 +665,11 @@ async function syncOneFolder(folder, opts) {
   folder.lastSyncAt = Date.now() / 1000;
   await persistFolders();
   log('夹同步完成:', folder.title, '| 页数:', pages, '|', full ? '全量' : '增量');
+  return { complete: true };
 }
 
-/* 增量模式：差异检测 + 针对性补齐（不做普查）
-   快判：本地数 == 官方 media_count → 零请求跳过；
+/* 增量模式：差异检测 + 针对性补齐（不做全量普查）
+   快判：本地数 == 官方 media_count 且 24 小时内核对过 ID → 零请求跳过；
    否则 ids 精核（滤非视频）。仅当满足下面两点才针对性全量：
      a) 本地 != 官方视频数；
      b) 相对上次“稳定基线”（ids 视频数 / 本地数 / 官方总数 三者快照）有变化。
@@ -568,6 +684,50 @@ function countFolderLocal(mediaId) {
   return n;
 }
 
+function folderAidSet(mediaId) {
+  const out = new Set();
+  for (const k of Object.keys(mem.items)) {
+    const it = mem.items[k];
+    if (it.folderIds && it.folderIds.includes(mediaId) && it.aid != null) out.add(String(it.aid));
+  }
+  return out;
+}
+
+/* 稳定、轻量的 32 位 FNV-1a 指纹；只用于变化检测，不承担安全用途。 */
+function fingerprintIds(ids) {
+  const sorted = ids.map(String).sort();
+  let h = 0x811c9dc5;
+  for (const id of sorted) {
+    for (let i = 0; i < id.length; i++) {
+      h ^= id.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    h ^= 124;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0') + ':' + sorted.length;
+}
+
+async function markSessionFolderComplete(mediaId) {
+  if (!mem.syncSession) return;
+  const done = new Set(Array.isArray(mem.syncSession.completedFolderIds)
+    ? mem.syncSession.completedFolderIds : []);
+  done.add(mediaId);
+  mem.syncSession.completedFolderIds = Array.from(done);
+  mem.syncSession.updatedAt = Date.now();
+  await persistSession(mem.syncSession);
+}
+
+async function markSessionFolderSkipped(mediaId) {
+  if (!mem.syncSession) return;
+  const skipped = new Set(Array.isArray(mem.syncSession.skippedFolderIds)
+    ? mem.syncSession.skippedFolderIds : []);
+  skipped.add(mediaId);
+  mem.syncSession.skippedFolderIds = Array.from(skipped);
+  mem.syncSession.updatedAt = Date.now();
+  await persistSession(mem.syncSession);
+}
+
 /* 若游标属于该夹则清空（该夹已被确认完成/无需再续传）。用于“无动作”路径：
    避免游标残留导致后续每次会话都跳跃到同一夹、且它前面的夹被跳过。 */
 function clearOwnCursorIf(folder) {
@@ -576,7 +736,7 @@ function clearOwnCursorIf(folder) {
 }
 
 /* 统一同步会话：逐夹保证本地与官方一致。
-   forceFull=true  → “全量周期”（首次同步 / 距上次全量超 24h / 手动全量重同步）：
+   forceFull=true  → “全量周期”（首次同步 / 手动全量重同步）：
                      每个启用夹都全量扫描一遍；断点续传会延续全量直到会话结束。
    forceFull=false → “差异会话”（日常增量同步）：一致的夹零请求跳过；不一致的夹
                      增量补新 / 全量清理；若上次中断留下某夹的 full 游标（如触顶
@@ -597,46 +757,79 @@ async function runSyncPass(folders, forceFull) {
   // 断点定位：上次中断（PAUSE/412/重试）残留的游标指向某夹的扫描进度。
   // 只认 full 游标（增量不写游标）；目标夹仍在本次列表才续起，否则丢弃。
   let resume = null;
-  let startIdx = 0;
   if (mem.syncCursor && mem.syncCursor.mediaId && mem.syncCursor.full === true) {
     const age = Date.now() - (mem.syncCursor.updatedAt || 0);
     if (age < CFG.CURSOR_TTL_MS) {
       const pos = folders.findIndex(f => f.mediaId === mem.syncCursor.mediaId);
-      if (pos >= 0) { startIdx = pos; resume = mem.syncCursor; }
+      if (pos >= 0) resume = mem.syncCursor;
     }
   }
   if (!resume && mem.syncCursor) await persistCursor(null);   // 游标失效/不在列表：丢弃
-  const sessionFull = resume ? !!resume.sessionFull : forceFull;
-  if (startIdx > 0) log('同步会话从中断夹续起：', folders[startIdx].title, '（pn=' + ((resume && resume.pn) || 1) + '）');
+  const sessionFull = mem.syncSession ? !!mem.syncSession.full : forceFull;
+  if (resume) {
+    const rf = folders.find(f => f.mediaId === resume.mediaId);
+    log('同步会话将续传中断夹：', (rf && rf.title) || resume.mediaId, '（pn=' + (resume.pn || 1) + '）');
+  }
 
-  for (let i = startIdx; i < folders.length; i++) {
+  for (let i = 0; i < folders.length; i++) {
     const folder = folders[i];
     if (cancelSync) throw Object.assign(new Error('cancel'), { kind: 'STOP' });
     const idx = i + 1;
-    if (folder.readable === false) {
-      // 不可读夹不扫描；若中断游标恰好指向它，说明该夹不可能在续扫中，清掉避免死跳
-      await clearOwnCursorIf(folder);
-      continue;
-    }
-    const isResumeFolder = !!(resume && i === startIdx);
+    const isResumeFolder = !!(resume && resume.mediaId === folder.mediaId);
+    if (!isResumeFolder && sessionFull && mem.syncSession &&
+        Array.isArray(mem.syncSession.completedFolderIds) &&
+        mem.syncSession.completedFolderIds.includes(folder.mediaId)) continue;
 
     // —— 全量周期：每夹直接全量扫（中断夹从游标 pn 续扫）——
-    if (forceFull) {
+    if (sessionFull) {
       const startPn = isResumeFolder && resume && resume.pn ? resume.pn : 1;
       log('开始同步夹:', idx + '/' + total, folder.title, '(' + folder.mediaId + ') 全量');
       flowCtx = { folderTitle: folder.title, folderIndex: idx, folderTotal: total, phase: '全量' };
       setFlow(`同步中 ${idx}/${total}：「${folder.title}」`);
-      await syncOneFolder(folder, { full: true, sessionFull, startPn });
+      const outcome = await syncOneFolder(folder, { full: true, sessionFull, startPn });
       // 只清“属于本夹”的游标：本夹已完成；别的夹（若有）的断点保留。
       await clearOwnCursorIf(folder);
+      if (outcome && outcome.unreadable) {
+        await markSessionFolderSkipped(folder.mediaId);
+        await markSessionFolderComplete(folder.mediaId);
+        resume = null;
+        continue;
+      }
       // 全量扫描完成即记录基线，防止下一轮差异检测把刚收敛的幽灵/触顶大夹
       // （local<mediaCount）误判为“首次收敛”再白跑一轮全量。
       folder.diffLocal = countFolderLocal(folder.mediaId);
       folder.diffMedia = folder.mediaCount || 0;
+      folder.diffCheckedAt = Date.now();
       await persistFolders();
+      await markSessionFolderComplete(folder.mediaId);
       pushView();
       resume = null;
-      if (!latestHomeTabId) return;        // 页面全关，中断
+      if (!latestHomeTabId) {
+        throw Object.assign(new Error('B 站页面已关闭'), { kind: 'RETRY_LATER' });
+      }
+      continue;
+    }
+
+    // 差异会话里若某夹的“针对性全量”曾被打断，必须先从游标继续完成该夹，
+    // 不能重新走计数快判后把断点清掉。
+    if (isResumeFolder && resume && resume.full) {
+      const startPn = resume.pn || 1;
+      flowCtx = { folderTitle: folder.title, folderIndex: idx, folderTotal: total, phase: '续传全量清理' };
+      setFlow(`续传差异补全 ${idx}/${total}：「${folder.title}」`);
+      const outcome = await syncOneFolder(folder, { full: true, startPn });
+      await clearOwnCursorIf(folder);
+      if (outcome && outcome.unreadable) {
+        await markSessionFolderSkipped(folder.mediaId);
+        resume = null;
+        continue;
+      }
+      folder.diffLocal = countFolderLocal(folder.mediaId);
+      folder.diffMedia = folder.mediaCount || 0;
+      folder.diffCheckedAt = Date.now();
+      await persistFolders();
+      await markSessionFolderComplete(folder.mediaId);
+      resume = null;
+      pushView();
       continue;
     }
 
@@ -645,7 +838,9 @@ async function runSyncPass(folders, forceFull) {
     flowCtx = { folderTitle: folder.title, folderIndex: idx, folderTotal: total, phase: '差异检测' };
     setFlow(`差异检测 ${idx}/${total}：「${folder.title}」`);
 
-    if (local === (folder.mediaCount || 0)) {
+    const equalCountProbeDue = !folder.diffCheckedAt ||
+      (Date.now() - folder.diffCheckedAt) >= CFG.DIFF_ID_PROBE_MS;
+    if (folder.readable !== false && local === (folder.mediaCount || 0) && !equalCountProbeDue) {
       await clearOwnCursorIf(folder);
       folder.lastSyncAt = Date.now() / 1000;   // 无差异：不打任何接口
       continue;
@@ -653,10 +848,10 @@ async function runSyncPass(folders, forceFull) {
 
     // 快通道：上次核对已确认差异本质（幽灵占位=diffGhost / ids 触顶=diffCapped），
     // 且官方总数、本地数均未变 → 无需再打 ids 探测（真正近零请求）。
-    // 边界：若用户在总数不变的情况下“换”了一条（删一加一）会漏一轮，但下次总数
-    // 变动即纠正；作为“近零请求”与文档承诺的权衡可接受。
+    // 即便数量稳定也会按 DIFF_ID_PROBE_MS 低频复核，避免“删一加一”永久漏同步。
     const mNow = folder.mediaCount || 0;
-    if ((folder.diffGhost === true || folder.diffCapped === true) &&
+    if (!equalCountProbeDue && folder.readable !== false &&
+        (folder.diffGhost === true || folder.diffCapped === true) &&
         folder.diffLocal === local && folder.diffMedia === mNow) {
       await clearOwnCursorIf(folder);
       folder.lastSyncAt = Date.now() / 1000;
@@ -669,35 +864,47 @@ async function runSyncPass(folders, forceFull) {
     const j = res.json || {};
     if (res.ok && j.code === 0 && j.data && Array.isArray(j.data)) {
       const idsArr = j.data;
-      const videos = idsArr.filter(m => m.type === undefined || m.type === 2).length;
+      const videoRows = idsArr.filter(m => m.type === undefined || m.type === 2);
+      const remoteIds = Array.from(new Set(videoRows.filter(m => m.id != null).map(m => String(m.id))));
+      const videos = remoteIds.length;
+      const remoteFingerprint = fingerprintIds(remoteIds);
+      const localIds = folderAidSet(folder.mediaId);
       // ids 疑似触顶（返回数 ≥1000 且远小于官方总数）→ 不能拿它当全集做相等判断
       const capped = idsArr.length >= 1000 && (folder.mediaCount || 0) > idsArr.length;
+      const membershipSame = !capped && remoteIds.length === localIds.size &&
+        remoteIds.every(id => localIds.has(id));
+      folder.readable = true;
+      folder.error = '';
+      folder.diffCheckedAt = Date.now();
       // 每次探测即刷新“差异本质”标记：capped 夹决策只看官方总数/本地数，
       // 非 capped 且可枚举视频与本地一致 → 幽灵夹。二者都用于下一轮快通道免探测。
       folder.diffCapped = capped ? true : undefined;
-      if (!capped && videos === local) folder.diffGhost = true;
+      if (!capped && membershipSame) folder.diffGhost = true;
       else folder.diffGhost = undefined;
       // 基线稳定（幽灵占位等恒定差值）：官方/本地/总数三者未变 → 吸收并跳过
       const baseSame = folder.diffIds != null &&
         folder.diffIds === videos &&
         folder.diffLocal === local &&
-        folder.diffMedia === mNow;
+        folder.diffMedia === mNow &&
+        (capped || (membershipSame && folder.diffFingerprint === remoteFingerprint));
       if (baseSame) {
         // 差异本质已由上面探测结果刷新（capped→diffCapped / 非 capped 稳定差→diffGhost），
         // 但 baseSame 场景（如 ids 含本地拉不到的失效条目，videos>local 恒定）此前不会设
         // diffGhost → 每轮仍打 ids。这里补设，让下一轮走快通道免探测。
-        if (!capped) folder.diffGhost = true;
+        if (!capped && membershipSame) folder.diffGhost = true;
+        folder.diffFingerprint = remoteFingerprint;
         await clearOwnCursorIf(folder);
         folder.lastSyncAt = Date.now() / 1000;
         await persistFolders();
         continue;
       }
-      if (!capped && videos === local) {
+      if (!capped && membershipSame) {
         // 幽灵差异（官方总数>本地，多出的部分是 resource/list 拉不到的占位）：
         // 本地视频已与官方可枚举视频一致 → 写基线 + diffGhost 标记，此后快通道免探测。
         folder.diffIds = videos;
         folder.diffLocal = local;
         folder.diffMedia = mNow;
+        folder.diffFingerprint = remoteFingerprint;
         folder.diffGhost = true;
         await clearOwnCursorIf(folder);
         folder.lastSyncAt = Date.now() / 1000;
@@ -737,9 +944,10 @@ async function runSyncPass(folders, forceFull) {
           continue;   // 基线已代表当前状态，无动作
         }
       } else {
-        full = videos < local;
-        act = full ? '全量清理' : '增量补新';
-        log('差异夹 → 针对性' + (full ? '删除' : '新增') + ':', folder.title, '| 本地', local, '| 官方视频', videos);
+        // 数量相同但 ID 集合不同同样必须全量：增量只能补新，不能摘掉已删除成员。
+        full = videos <= local;
+        act = videos === local ? '全量（等量替换）' : (full ? '全量清理' : '增量补新');
+        log('差异夹 → ' + act + ':', folder.title, '| 本地', local, '| 官方视频', videos);
       }
 
       // 针对性补齐（删除/触顶场景保留中断游标续传）
@@ -752,31 +960,38 @@ async function runSyncPass(folders, forceFull) {
         startPn = mem.syncCursor.pn || 1;
       }
       setFlow(`补全差异 ${idx}/${total}：「${folder.title}」${full ? '（全量）' : '（增量补新）'}`);
-      await syncOneFolder(folder, { full, startPn, sessionFull: true });
+      const outcome = await syncOneFolder(folder, { full, startPn });
       // 只清“属于本夹”的游标：若 syncOneFolder 前 mem.syncCursor 指向的是别的夹
       // （大夹中断续传点），清掉会丢掉断点 → 下轮又从头全量。本夹正常完成后，
       // 若游标属于本夹（full 扫描残留）则清空表示该夹已完成。
       await clearOwnCursorIf(folder);
+      if (outcome && outcome.unreadable) {
+        await markSessionFolderSkipped(folder.mediaId);
+        continue;
+      }
       // 记录稳定基线（官方视频数 / 补齐后的本地真实数 / 官方总数）
       folder.diffIds = videos;
       folder.diffLocal = countFolderLocal(folder.mediaId);
       folder.diffMedia = folder.mediaCount || 0;
+      folder.diffFingerprint = remoteFingerprint;
+      folder.diffCheckedAt = Date.now();
       await persistFolders();   // 立即落盘：配额中断/页面关闭也不丢已核对夹的基线
       pushView();
       await sleep(CFG.PAGE_GAP_MS);
     } else if (j.code === -101) {
       throw Object.assign(new Error('login'), { kind: 'LOGIN' });
-    } else if (!res.ok && res.status === 412) {
+    } else if ((!res.ok && res.status === 412) || j.code === -412) {
       throw Object.assign(new Error('rate'), { kind: 'RATE' });
-    } else if (j.code === -403 || j.code === -404) {
+    } else if (j.code === -400 || j.code === -403 || j.code === -404) {
       folder.readable = false;
       folder.error = '该收藏夹暂不可读（可能为私密夹）';
       await clearOwnCursorIf(folder);   // 不可读夹无续传意义
       await persistFolders();
+      await markSessionFolderSkipped(folder.mediaId);
       continue;
     } else {
-      log('差异检测跳过（ids 请求异常）:', folder.title, res.ok ? ('code=' + j.code) : (res.error || ''));
-      continue;   // 本次检不了就留到下一轮（不清游标：下次仍可从中断点续）
+      log('差异检测中断（ids 请求异常）:', folder.title, res.ok ? ('code=' + j.code) : (res.error || ''));
+      throw Object.assign(new Error('resource/ids 请求异常: ' + folder.title), { kind: 'RETRY_LATER' });
     }
   }
   flowCtx = null;
@@ -785,7 +1000,7 @@ async function runSyncPass(folders, forceFull) {
 
 async function runRefresh() {
   // “仅刷新收藏夹列表”标记：先取出并复位，避免被冷却期吞掉后残留影响后续触发
-  const foldersOnly = mem.pendingFoldersOnly;
+  const foldersOnly = mem.pendingFoldersOnly || !!mem.meta.pendingFoldersOnly;
   mem.pendingFoldersOnly = false;
 
   // “立即同步”（跳过冷却）：取出并复位；若仍处冷却，清掉冷却标记直接开跑
@@ -809,7 +1024,7 @@ async function runRefresh() {
   }
   // 冷却到点且本地留有持久化标记（可能跨 SW 重启/跨页面）：清理后立即续跑
   if (mem.meta.resumeAt) await clearHold();
-  if (refreshBusy) { refreshQueued = true; return; }
+  if (refreshBusy) return;
   refreshBusy = true;
   // 新会话复位终止标志：空闲期点过“终止”只清了冷却/游标，不该让下一次手动同步
   // 一开始就被残留的 cancelSync 立刻 STOP（曾导致终止后需点两次才开始）。
@@ -827,6 +1042,7 @@ async function runRefresh() {
 
     // 登录态 + 收藏夹列表
     await refreshLogin(false);
+    if (cancelSync) throw Object.assign(new Error('cancel'), { kind: 'STOP' });
     if (!loginInfo.ok) {
       log('刷新中止：', loginInfo.error ? ('无法连接接口（' + loginInfo.error + '）') : '未登录');
       pushView(); return;
@@ -835,27 +1051,78 @@ async function runRefresh() {
 
     // 仅“刷新收藏夹”：拉最新夹列表即返回，不扫内容
     if (foldersOnly) {
-      await ensureFolderList(true);
+      const foldersOk = await ensureFolderList(true);
+      if (cancelSync) throw Object.assign(new Error('cancel'), { kind: 'STOP' });
+      if (!foldersOk) throw Object.assign(new Error('收藏夹列表刷新失败'), { kind: 'RETRY_LATER' });
+      delete mem.meta.pendingFoldersOnly;
+      await persistMeta();
+      refreshAttempts = 0;
       setFlow('已刷新收藏夹列表：共 ' + mem.folders.length + ' 个');
       log('仅刷新收藏夹列表完成:', mem.folders.length, '个');
       pushView();
       return;
     }
+
+    // 在刷新收藏夹列表之前就持久化“请求意图”：即使 412/重启发生在列表阶段，
+    // 续传仍知道原会话是全量还是增量、属于哪个范围。
+    let session = mem.syncSession;
+    if (session && (Date.now() - (session.updatedAt || session.startedAt || 0)) >= CFG.SESSION_TTL_MS) {
+      log('未完成同步会话已过期，丢弃旧状态');
+      await clearSyncState();
+      session = null;
+    }
+    if (!session) {
+      refreshAttempts = 0;
+      const requestedScope = mem.pendingScope || 'all';
+      session = {
+        id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+        full: needFullCycle(),
+        scope: requestedScope,
+        folderIds: null,
+        coversAll: false,
+        daily: !!mem.pendingDailyRun,
+        completedFolderIds: [],
+        skippedFolderIds: [],
+        startedAt: Date.now(),
+        updatedAt: Date.now()
+      };
+      mem.pendingFull = false;
+      mem.pendingScope = 'all';
+      mem.pendingDailyRun = false;
+      await persistSession(session);
+    }
     // 每次同步都强制刷新收藏夹列表：差异检测依赖官方计数最新（代价≈数个请求，远小于普查）
-    await ensureFolderList(true);
+    const foldersOk = await ensureFolderList(true);
+    if (cancelSync) throw Object.assign(new Error('cancel'), { kind: 'STOP' });
+    if (!foldersOk) throw Object.assign(new Error('收藏夹列表刷新失败'), { kind: 'RETRY_LATER' });
+    if (session.applySelection && Array.isArray(session.folderIds)) {
+      await applyFolderSelection(session.folderIds);
+      session.applySelection = false;
+      session.updatedAt = Date.now();
+      await persistSession(session);
+    }
     log('收藏夹就绪，启用数 =', enabledFolders().length);
 
     const list0 = enabledFolders();
     // 小收藏夹先同步：尽快积累可用数据，也把巨型夹的长时间扫描往后放
     list0.sort((a, b) => (a.mediaCount || 0) - (b.mediaCount || 0));
-    // 本次同步范围（可选：全部 / 仅自建 / 仅追更）
-    const scope = mem.pendingScope || 'all';
-    mem.pendingScope = 'all';
-    const list = scope === 'created' || scope === 'collected'
-      ? list0.filter(f => f.source === scope)
-      : list0;
-    const fullCycle = needFullCycle();
-    mem.pendingFull = false;
+    // 新会话首次拿到完整列表后固定目标 ID；恢复时严格沿用，范围不会退回 all。
+    let list;
+    if (Array.isArray(session.folderIds)) {
+      const wanted = new Set(session.folderIds);
+      list = list0.filter(f => wanted.has(f.mediaId));
+      session.coversAll = list.length === list0.length;
+      session.updatedAt = Date.now();
+      await persistSession(session);
+    } else {
+      list = session.scope === 'created' || session.scope === 'collected'
+        ? list0.filter(f => f.source === session.scope)
+        : list0.slice();
+      session.folderIds = list.map(f => f.mediaId);
+      session.coversAll = list.length === list0.length;
+      session.updatedAt = Date.now();
+      await persistSession(session);
+    }
 
     // 空列表：可能确实没有启用夹（刚拉成功则结束首次同步），也可能是列表还没拿到。
     // 区分处理，避免把“拉不到列表”误标成已完成。
@@ -865,6 +1132,7 @@ async function runRefresh() {
         mem.meta.lastSyncAt = Date.now() / 1000;
         mem.meta.syncedOnce = true;
         await persistMeta();
+        await clearSyncState();
       } else {
         refreshAttempts++;
         if (refreshAttempts >= 8) setFlow('多次获取收藏夹失败，请查看扩展 Service Worker 日志');
@@ -876,17 +1144,19 @@ async function runRefresh() {
 
     // 统一同步会话：全量周期（fullCycle=true）或差异会话都走 runSyncPass，
     // 断点续传/游标管理/基线落盘在此函数内统一处理，避免两套循环行为分叉。
-    await runSyncPass(list, fullCycle);
+    await runSyncPass(list, session.full);
 
     refreshAttempts = 0;
-    setFlow('同步完成 ✓');
+    const completedSession = mem.syncSession || session;
+    const skippedCount = Array.isArray(completedSession.skippedFolderIds) ? completedSession.skippedFolderIds.length : 0;
+    setFlow(skippedCount ? ('同步完成，但有 ' + skippedCount + ' 个收藏夹暂不可读') : '同步完成 ✓');
 
-    if (fullCycle) mem.meta.lastFullSyncAt = Date.now() / 1000;
+    if (completedSession.full && completedSession.coversAll && skippedCount === 0) mem.meta.lastFullSyncAt = Date.now() / 1000;
     mem.meta.lastSyncAt = Date.now() / 1000;
     mem.meta.syncedOnce = true;
-    if (mem.pendingDailyRun) { mem.meta.autoSyncKey = todayKey(); mem.pendingDailyRun = false; }
+    if (completedSession.daily) mem.meta.autoSyncKey = todayKey();
     await persistMeta();
-    await persistCursor(null);
+    await clearSyncState();
     pushView();
   } catch (err) {
     if (err && err.kind === 'LOGIN') {
@@ -898,8 +1168,9 @@ async function runRefresh() {
     } else if (err && err.kind === 'STOP') {
       // 用户终止：取消自动续传/重试，清理标记与游标
       cancelSync = false;
+      clearPendingRequests();
       await clearHold();
-      await persistCursor(null);
+      await clearSyncState();
       refreshAttempts = 99;
       setFlow('同步已终止');
       log('同步已由用户终止');
@@ -932,23 +1203,17 @@ async function runRefresh() {
   } finally {
     refreshBusy = false;
     flowCtx = null;
-    if (refreshQueued) { refreshQueued = false; setTimeout(() => runRefresh(), 10); }
-    // 暂停/冷却结束后自动续传（412 用长冷却，配额用 5 分钟；冷却标记持久化）
-    const pauseWait = coolingMs();
-    if (pauseWait > 0 && latestHomeTabId) {
-      const reason = pauseReason;
-      setTimeout(async () => {
-        await clearHold();
-        if (latestHomeTabId) {
-          log(reason === '412' ? '412 冷却结束，自动续传' : '配额暂停结束，自动继续');
-          runRefresh();
-        }
-      }, pauseWait + 1000);
+    if (clearAfterSync) {
+      clearAfterSync = false;
+      await resetAllData();
+      pushView();
+      return;
     }
     // 首次同步未完成且仍有首页标签时自动续跑（上限 8 次，避免死循环）
-    if (!mem.meta.syncedOnce && latestHomeTabId && refreshAttempts < 8 && rateUntil <= Date.now()) {
+    if (mem.syncSession && !mem.meta.syncedOnce && latestHomeTabId &&
+        refreshAttempts < 8 && rateUntil <= Date.now()) {
       setTimeout(() => {
-        if (!refreshBusy && !mem.meta.syncedOnce && latestHomeTabId) {
+        if (mem.syncSession && !refreshBusy && !mem.meta.syncedOnce && latestHomeTabId) {
           log('自动重试刷新（第', refreshAttempts, '次）');
           runRefresh();
         }
@@ -1149,6 +1414,13 @@ async function handle(msg, sender) {
         try { await refreshLogin(false); } catch (e) { log('首页登录复核失败:', e); }
       }
       // 接续：用户曾在“无 B 站标签”时点了同步 → 本页就是刚自动打开的首页，执行它
+      if (mem.meta.pendingFoldersOnly) {
+        mem.pendingManual = false;
+        mem.pendingFolderIds = null;
+        mem.pendingFoldersOnly = true;
+        runRefresh();
+        return buildView();
+      }
       if (mem.pendingManual) {
         const ids = mem.pendingFolderIds;
         mem.pendingFolderIds = null;
@@ -1164,6 +1436,9 @@ async function handle(msg, sender) {
       if (resumeAt > 0) {
         // 曾触发 412/配额冷却：到点且此刻在 B 站 → 自动继续；未到点 → 不进行操作
         if (resumeAt <= Date.now()) shouldRun = true;
+      } else if (mem.syncSession) {
+        // 未完成会话优先于新的自动同步判定，避免 daily 已记当天后吞掉续传。
+        shouldRun = true;
       } else if (mode === 'onHome') {
         shouldRun = true;
       } else if (mode === 'daily') {
@@ -1205,14 +1480,39 @@ async function handle(msg, sender) {
         pushView();
         return { started: false, cooldown: true, seconds: s, reason };
       }
+      if (refreshBusy) return { started: false, busy: true };
       if (force) forceSkipCooldown = true;   // 交由 runRefresh 清除冷却并开跑
+      // 空闲时立即把请求意图落盘，避免“自动打开首页”途中 SW 重启后丢失 full/scope。
+      if (!refreshBusy && !mem.syncSession) {
+        refreshAttempts = 0;
+        const selectedIds = Array.isArray(msg.folderIds) ? msg.folderIds.slice() : null;
+        await persistSession({
+          id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+          full: !!msg.full || !mem.meta.lastFullSyncAt,
+          scope: selectedIds ? 'all' : (msg.scope || 'all'),
+          folderIds: selectedIds,
+          applySelection: !!selectedIds,
+          coversAll: false,
+          daily: false,
+          completedFolderIds: [],
+          skippedFolderIds: [],
+          startedAt: Date.now(),
+          updatedAt: Date.now()
+        });
+        mem.pendingFull = false;
+        mem.pendingScope = 'all';
+      }
       // 复用真实 B 站页面（content 向导 / popup 正好点在 B 站上）；否则查已打开的 B 站标签
       const tab = pickSenderBiliTab(sender) || await findHomeTab();
+      // 普通同步必须清掉可能由旧的“仅刷新列表”请求留下的标记，否则 HOME_OPEN
+      // 会把这次内容同步误判成只刷新收藏夹并提前结束。
+      if (mem.meta.pendingFoldersOnly) {
+        delete mem.meta.pendingFoldersOnly;
+        await persistMeta();
+      }
       if (!tab) {
         // 没有任何 B 站标签：记录本次请求 → 前台打开首页 → 页面加载后由 HOME_OPEN 接续执行
         mem.pendingFolderIds = Array.isArray(msg.folderIds) ? msg.folderIds.slice() : null;
-        mem.pendingScope = Array.isArray(msg.folderIds) ? 'all' : (msg.scope || 'all');
-        mem.pendingFull = !!msg.full;
         mem.pendingManual = true;
         chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
         log('无 B 站标签，自动打开首页（同步待接续）');
@@ -1222,11 +1522,6 @@ async function handle(msg, sender) {
       latestHomeTabId = tab.id;
       if (Array.isArray(msg.folderIds)) {
         await applyFolderSelection(msg.folderIds);
-        mem.pendingFull = true;
-        mem.pendingScope = 'all';
-      } else {
-        mem.pendingScope = msg.scope || 'all';
-        if (msg.full) mem.pendingFull = true;
       }
       runRefresh();
       log('同步请求已受理');
@@ -1234,6 +1529,7 @@ async function handle(msg, sender) {
     }
 
     case MSG.REFRESH_FOLDERS: {
+      if (refreshBusy) return { started: false, busy: true };
       // 冷却中先拦截：给出剩余秒数，避免“已受理”但实际被 runRefresh 内部吞掉
       const wait2 = coolingMs();
       if (wait2 > 0) {
@@ -1245,17 +1541,20 @@ async function handle(msg, sender) {
         pushView();
         return { cooldown: true, seconds: s, reason };
       }
+      // 在查找/自动打开页面之前持久化操作类型，避免这段窗口内 SW 重启后
+      // 把“仅刷新列表”恢复成内容同步。
+      mem.pendingFoldersOnly = true;
+      mem.meta.pendingFoldersOnly = true;
+      await persistMeta();
       const tab = pickSenderBiliTab(sender) || await findHomeTab();
       if (!tab) {
         mem.pendingManual = true;
-        mem.pendingFoldersOnly = true;
         chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
         log('无 B 站标签，打开首页（刷新收藏夹待接续）');
         return { openingHome: true };
       }
       homeTabs.set(tab.id, Date.now());
       latestHomeTabId = tab.id;
-      mem.pendingFoldersOnly = true;
       runRefresh();
       log('收藏夹列表刷新请求已受理');
       return { started: true };
@@ -1264,15 +1563,47 @@ async function handle(msg, sender) {
     case MSG.CANCEL_SYNC: {
       log('收到终止同步请求');
       cancelSync = true;
+      clearPendingRequests();
       if (!refreshBusy) {
         await clearHold();
-        await persistCursor(null);
+        await clearSyncState();
         refreshAttempts = 99;
         setFlow('同步已终止');
         pushView();
       }
       // 正在运行时：循环在下一页检测到 cancelSync 后自行停止（见 STOP 分支清理）
       return { ok: true };
+    }
+
+    case MSG.SET_FOLDER_ENABLED: {
+      // folders 是后台同步状态的一部分，禁止设置页在同步中整对象覆盖。
+      if (refreshBusy) return { ok: false, busy: true };
+      const ids = Array.isArray(msg.ids) ? msg.ids : [];
+      const wanted = new Set(ids);
+      const enabled = !!msg.enabled;
+      let changed = false;
+      for (const f of mem.folders) {
+        if (!wanted.has(f.mediaId)) continue;
+        if ((f.enabled !== false) !== enabled) { f.enabled = enabled; changed = true; }
+      }
+      if (changed) await persistFolders();
+      pushView();
+      return { ok: true, changed };
+    }
+
+    case MSG.CLEAR_DATA: {
+      // 正在请求页面时不能让设置页先删、后台随后又写回；先发停止信号，
+      // 待 runRefresh 的 finally 收口清空。空闲时立即清理。
+      if (refreshBusy) {
+        clearAfterSync = true;
+        cancelSync = true;
+        setFlow('正在终止同步并清空数据…');
+        pushView();
+        return { ok: true, queued: true };
+      }
+      await resetAllData();
+      pushView();
+      return { ok: true, queued: false };
     }
 
     case MSG.SET_DEBUG_DATE: {
@@ -1344,6 +1675,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try { sendResponse({ error: String((err && err.message) || err) }); } catch (e) {}
     });
   return true; // 异步响应
+});
+
+chrome.alarms.onAlarm.addListener(async alarm => {
+  if (!alarm || alarm.name !== RESUME_ALARM) return;
+  await ensureLoaded();
+  if ((mem.meta.resumeAt || 0) > Date.now()) {
+    try { await chrome.alarms.create(RESUME_ALARM, { when: mem.meta.resumeAt + 1000 }); } catch (e) {}
+    return;
+  }
+  await clearHold();
+  const tab = await findHomeTab();
+  if (!tab) {
+    log('续传闹钟到点，但没有可用 B 站标签；保留会话，待下次打开 B 站继续');
+    return;
+  }
+  latestHomeTabId = tab.id;
+  homeTabs.set(tab.id, Date.now());
+  log('续传闹钟到点，恢复同步');
+  runRefresh();
+});
+
+chrome.tabs.onRemoved.addListener(tabId => {
+  homeTabs.delete(tabId);
+  if (latestHomeTabId === tabId) latestHomeTabId = null;
 });
 
 /* SW 启动：预热缓存，避免首条消息延迟 */

@@ -249,7 +249,7 @@ function render(v) {
   // 检测“刚结束一次同步”（用于结束时给个可见的完成提示）
   const becameIdle = wasSyncing && !v.syncing;
   wasSyncing = v.syncing;
-  const interrupted = !!v.note && /中断|出错|冷却|暂停|风控/.test(v.note);
+  const interrupted = !!v.note && /中断|出错|冷却|暂停|风控|不可读/.test(v.note);
 
   // 1. 未登录 / 接口连不上
   if (v.loginState === 'no') {
@@ -427,12 +427,12 @@ function forceSyncNow() {
 
 /* 长期未全量提醒：立即全量 / 稍后（两者都记录本次提醒时间，7 天后再弹） */
 function remindFullSyncNow() {
-  safeSend({ type: MSG.MARK_FULLSYNC_REMINDED });
   const total = ((view && view.foldersDetailed) || [])
     .filter(f => f.enabled)
     .reduce((s, f) => s + (f.mediaCount || 0), 0);
   if (total > CFG.FULL_SYNC_CONFIRM_THRESHOLD &&
       !confirm(`本次全量同步将处理约 ${total} 条收藏，可能需要较长时间，是否继续？`)) return;
+  safeSend({ type: MSG.MARK_FULLSYNC_REMINDED });
   startSyncNow();
 }
 function remindFullSyncLater() {

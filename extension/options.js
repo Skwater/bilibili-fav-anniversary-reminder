@@ -51,14 +51,27 @@ function renderView(v) {
   }
 }
 
+/* 顶部与分组标题共用同一统计口径，避免“选中”数量显示不一致。 */
+function folderSelectionStats(folders) {
+  const list = Array.isArray(folders) ? folders : [];
+  const selected = list.filter(f => f.enabled !== false && f.readable !== false);
+  return {
+    selectedFolders: selected.length,
+    totalFolders: list.length,
+    selectedItems: selected.reduce((sum, f) => sum + (f.mediaCount || 0), 0),
+    totalItems: list.reduce((sum, f) => sum + (f.mediaCount || 0), 0)
+  };
+}
+
+function formatFolderSelectionStats(folders) {
+  const s = folderSelectionStats(folders);
+  return `选中 ${s.selectedFolders}/${s.totalFolders} 个 · 共计 ${s.selectedItems}/${s.totalItems} 条`;
+}
+
 async function renderFolders() {
   const o = await storageGet(CFG.KEY_FOLDERS);
   const folders = Array.isArray(o[CFG.KEY_FOLDERS]) ? o[CFG.KEY_FOLDERS] : [];
-  const selFolders = folders.filter(f => f.enabled !== false && f.readable !== false).length;
-  const totalFolders = folders.length;
-  const selItems = folders.reduce((s, f) => s + ((f.enabled !== false && f.readable !== false) ? (f.mediaCount || 0) : 0), 0);
-  const totalItems = folders.reduce((s, f) => s + (f.mediaCount || 0), 0);
-  $('folderCount').textContent = `选中 ${selFolders}/${totalFolders} 个 · 共计 ${selItems}/${totalItems} 条`;
+  $('folderCount').textContent = formatFolderSelectionStats(folders);
   const list = $('folderList');
   list.innerHTML = '';
   if (!folders.length) {
@@ -80,7 +93,7 @@ async function renderFolders() {
     t.textContent = title;
     const c = document.createElement('span');
     c.className = 'cnt';
-    c.textContent = `${items.length} 个`;
+    c.textContent = formatFolderSelectionStats(items);
     const bAll = document.createElement('button');
     bAll.type = 'button';
     bAll.className = 'mini-btn';
@@ -173,27 +186,17 @@ async function saveSettingsPatch(patch) {
 }
 
 function setFolderEnabled(mediaId, enabled) {
-  storageGet(CFG.KEY_FOLDERS).then(o => {
-    const folders = Array.isArray(o[CFG.KEY_FOLDERS]) ? o[CFG.KEY_FOLDERS] : [];
-    const f = folders.find(x => x.mediaId === mediaId);
-    if (f) {
-      f.enabled = enabled;
-      storageSet({ [CFG.KEY_FOLDERS]: folders }).then(() => renderFolders());
-    }
+  msg({ type: MSG.SET_FOLDER_ENABLED, ids: [mediaId], enabled }).then(r => {
+    if (r && r.busy) $('syncStatus').textContent = '同步进行中，请完成或终止后再修改收藏夹范围。';
+    renderFolders();
   });
 }
 
 /* 组级批量启用/关闭（供各组“全选 / 全不选”使用） */
 function setManyFolderEnabled(ids, enabled) {
-  const set = new Set(ids);
-  storageGet(CFG.KEY_FOLDERS).then(o => {
-    const folders = Array.isArray(o[CFG.KEY_FOLDERS]) ? o[CFG.KEY_FOLDERS] : [];
-    let changed = false;
-    for (const f of folders) {
-      if (!set.has(f.mediaId) || f.readable === false) continue;
-      if ((f.enabled !== false) !== enabled) { f.enabled = enabled; changed = true; }
-    }
-    if (changed) storageSet({ [CFG.KEY_FOLDERS]: folders }).then(() => renderFolders());
+  msg({ type: MSG.SET_FOLDER_ENABLED, ids, enabled }).then(r => {
+    if (r && r.busy) $('syncStatus').textContent = '同步进行中，请完成或终止后再修改收藏夹范围。';
+    renderFolders();
   });
 }
 
@@ -210,20 +213,25 @@ function msg(opts) {
 document.addEventListener('DOMContentLoaded', async () => {
   await refreshAll();
 
-  $('btnSync').addEventListener('click', () => { msg({ type: MSG.SYNC_NOW, full: false, scope: syncScope }); });
+  $('btnSync').addEventListener('click', async () => {
+    const r = await msg({ type: MSG.SYNC_NOW, full: false, scope: syncScope });
+    if (r && r.busy) $('syncStatus').textContent = '已有同步正在进行中。';
+  });
   $('btnFull').addEventListener('click', async () => {
     // 全量耗时提醒：启用夹官方条目数之和超过阈值时，先确认再开始
     const v = view || await getView();
     const total = ((v && v.foldersDetailed) || [])
-      .filter(f => f.enabled)
+      .filter(f => f.enabled && (syncScope === 'all' || f.source === syncScope))
       .reduce((s, f) => s + (f.mediaCount || 0), 0);
     if (total > CFG.FULL_SYNC_CONFIRM_THRESHOLD &&
         !confirm(`本次全量同步将处理约 ${total} 条收藏，可能需要较长时间，是否继续？`)) return;
-    msg({ type: MSG.SYNC_NOW, full: true, scope: syncScope });
+    const r = await msg({ type: MSG.SYNC_NOW, full: true, scope: syncScope });
+    if (r && r.busy) $('syncStatus').textContent = '已有同步正在进行中。';
   });
   $('btnRefreshFolders').addEventListener('click', async () => {
     const r = await msg({ type: MSG.REFRESH_FOLDERS });
-    if (r && r.cooldown) $('syncStatus').textContent = '冷却中，稍后再刷新收藏夹列表。';
+    if (r && r.busy) $('syncStatus').textContent = '已有同步正在进行中。';
+    else if (r && r.cooldown) $('syncStatus').textContent = '冷却中，稍后再刷新收藏夹列表。';
     else $('syncStatus').textContent = '已请求刷新收藏夹列表…';
   });
 
@@ -265,7 +273,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   $('btnClear').addEventListener('click', async () => {
     if (!confirm('确定清空本地数据？将删除收藏夹列表、条目缓存、同步状态与设置。')) return;
-    await chrome.storage.local.remove([CFG.KEY_META, CFG.KEY_FOLDERS, CFG.KEY_ITEMS, CFG.KEY_SYNC, CFG.KEY_SETTINGS]);
+    const r = await msg({ type: MSG.CLEAR_DATA });
+    if (r && r.queued) $('syncStatus').textContent = '正在终止同步，完成后将清空本地数据…';
     await refreshAll();
   });
 });

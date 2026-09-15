@@ -2,7 +2,7 @@
 
 > Chrome 扩展（Manifest V3）· 在哔哩哔哩首页提醒你收藏夹里“历史上的今天”发布的投稿。
 
-> 🛒 **一键安装**：[Chrome 应用商店 · 哔哩朝花夕拾](https://chromewebstore.google.com/detail/kgamlldkccpldahaohnbnnfdnegphppe)（当前版本 v0.1.4）
+> 🛒 **一键安装**：[Chrome 应用商店 · 哔哩朝花夕拾](https://chromewebstore.google.com/detail/kgamlldkccpldahaohnbnnfdnegphppe)（商店版本以页面显示为准）
 
 打开 `https://www.bilibili.com/` 时，插件按你收藏夹内**视频投稿的发布时间**与今天（月-日）做匹配——如果若干年前的今天你收藏过某些投稿，右下角会弹出一张"X 年前的今天"卡片，点击可回到视频。
 
@@ -49,7 +49,7 @@
 
 ```
 extension/          # 扩展本体（manifest / common / background / content / popup / options / icons）
-tools/              # 自检脚本 selftest.js
+tools/              # 公共工具自检 selftest.js；同步状态机自检 background-selftest.js
 assets/             # 图标源图与宣传截图（logo.png、screenshot-1.png）
 需求梳理.md / 开发调试说明.md   # 设计与调试文档（本地，不入库）
 ```
@@ -61,6 +61,8 @@ assets/             # 图标源图与宣传截图（logo.png、screenshot-1.png�
 node --check extension/*.js
 # 单元自检（日期工具等）
 node tools/selftest.js
+# 同步状态机自检（分页失败、断点恢复、等量替换、登录并发等）
+node tools/background-selftest.js
 ```
 
 ## 免责声明与隐私

@@ -29,7 +29,7 @@ const CFG = {
   API: {
     NAV: 'https://api.bilibili.com/x/web-interface/nav',
     FOLDER_CREATED: 'https://api.bilibili.com/x/v3/fav/folder/created/list-all',
-    FOLDER_COLLECTED: 'https://api.bilibili.com/x/v3/fav/folder/collected/list-all',
+    FOLDER_COLLECTED: 'https://api.bilibili.com/x/v3/fav/folder/collected/list',
     MEDIA_LIST: 'https://api.bilibili.com/x/v3/fav/resource/list'
   },
 
@@ -44,6 +44,9 @@ const CFG = {
   BURST_PAUSE_MS: 5 * 60 * 1000,    // 配额跑满后的默认暂停：5 分钟（设置页可改）
   PROXY_TIMEOUT_MS: 20000,          // 单次代发请求超时
   CURSOR_TTL_MS: 6 * 3600 * 1000,   // 断点游标有效期
+  SESSION_TTL_MS: 7 * 24 * 3600 * 1000, // 未完成同步会话保留 7 天
+  DIFF_ID_PROBE_MS: 24 * 3600 * 1000,   // 数量相等时最多每天做一次 ID 指纹核对
+  CHECKPOINT_PAGES: 8,              // 全量扫描每 N 页提交一次 items + cursor 原子检查点
   BOOT_DELAY_MS: 3500,             // 打开首页后延迟首次显示浮层（避开“未登录”闪变）
   FULL_SYNC_CONFIRM_THRESHOLD: 5000, // 全量同步条目数超过此阈值时，先确认提醒耗时
   FULL_SYNC_STALE_MS: 30 * 24 * 3600 * 1000,   // 距上次全量超过此值视为“长期未全量”
@@ -64,6 +67,8 @@ const MSG = {
   CHECK_LOGIN: 'CHECK_LOGIN',       // 手动重试登录检查（跳过 TTL，立即复查）
   DEBUG_FORCE: 'DEBUG_FORCE',       // 调试：清除当日去重标记并重弹
   MARK_FULLSYNC_REMINDED: 'MARK_FULLSYNC_REMINDED', // 记录“长期未全量”提醒已展示
+  SET_FOLDER_ENABLED: 'SET_FOLDER_ENABLED', // 设置收藏夹开关 {ids, enabled}
+  CLEAR_DATA: 'CLEAR_DATA',         // 终止同步并清空全部本地数据
   LOG: 'LOG',
   /* background -> content */
   FETCH_URL: 'FETCH_URL',           // 让 content 代发 B 站请求
