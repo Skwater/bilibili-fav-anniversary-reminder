@@ -370,7 +370,7 @@ function cooldownCardView(v) {
   const sec = v.cooldownSec || 0;
   const txt = sec >= 60 ? Math.ceil(sec / 60) + ' 分钟' : sec + ' 秒';
   const desc = (v.cooldownReason === '412' ? 'B 站接口风控(412)冷却中' : '同步暂停中') +
-    '，约 ' + txt + ' 后自动继续';
+    '，约 ' + txt + ' 后自动继续，请勿关闭本页面';
   return stateCard('⏳', v.syncedOnce ? '同步已暂停' : '收藏夹尚未同步', desc,
     [btn('刷新', requestHome), btn('立即同步', forceSyncNow, true), btn('终止', sendCancelSync)]);
 }

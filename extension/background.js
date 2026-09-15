@@ -770,8 +770,8 @@ async function runRefresh() {
       // 暂停/冷却中：任何点击/自动触发都不静默，给出可见倒计时提示
       const s = Math.max(1, Math.ceil(wait / 1000));
       setFlow(pauseReason === '412'
-        ? 'B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传'
-        : '同步暂停（单段配额已用完），约 ' + s + ' 秒后自动继续');
+        ? 'B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传，请勿关闭本页面'
+        : '同步暂停（单段配额已用完），约 ' + s + ' 秒后自动继续，请勿关闭本页面');
       pushView();
       return;
     }
@@ -879,12 +879,12 @@ async function runRefresh() {
     } else if (err && err.kind === 'RATE') {
       const wait = settingMs('rateWaitMs', CFG.RATE_412_WAIT_MS);   // 412 冷却（设置页可调，默认 15 分钟）
       await holdUntil(wait, '412');
-      setFlow('B 站接口风控(412)：暂停 ' + Math.round(wait / 1000) + ' 秒后自动续传');
+      setFlow('B 站接口风控(412)：暂停 ' + Math.round(wait / 1000) + ' 秒后自动续传，请勿关闭本页面');
       log('412 风控，冷却至', new Date(rateUntil).toLocaleTimeString(), '后自动续传');
     } else if (err && err.kind === 'PAUSE') {
       const wait = settingMs('burstPauseMs', CFG.BURST_PAUSE_MS);   // 单段配额暂停（设置页可调，默认 5 分钟）
       await holdUntil(wait, 'quota');
-      setFlow('本段配额已用完，暂停 ' + Math.round(wait / 1000) + ' 秒后自动继续');
+      setFlow('本段配额已用完，暂停 ' + Math.round(wait / 1000) + ' 秒后自动继续，请勿关闭本页面');
       log('单段配额用完，暂停至', new Date(rateUntil).toLocaleTimeString());
     } else {
       setFlow('同步出错：' + ((err && err.message) || err));
@@ -1124,8 +1124,8 @@ async function handle(msg, sender) {
         const reason = pauseReason === '412' ? '412' : (mem.meta.resumeReason === '412' ? '412' : 'quota');
         log('同步请求被冷却拦截，剩余', s, '秒');
         setFlow(reason === '412'
-          ? 'B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传'
-          : '同步暂停（单段配额已用完），约 ' + s + ' 秒后自动继续');
+          ? 'B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传，请勿关闭本页面'
+          : '同步暂停（单段配额已用完），约 ' + s + ' 秒后自动继续，请勿关闭本页面');
         pushView();
         return { started: false, cooldown: true, seconds: s, reason };
       }
@@ -1164,8 +1164,8 @@ async function handle(msg, sender) {
         const s = Math.max(1, Math.ceil(wait2 / 1000));
         const reason = pauseReason === '412' ? '412' : (mem.meta.resumeReason === '412' ? '412' : 'quota');
         setFlow(reason === '412'
-          ? 'B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传'
-          : '同步暂停（单段配额已用完），约 ' + s + ' 秒后自动继续');
+          ? 'B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传，请勿关闭本页面'
+          : '同步暂停（单段配额已用完），约 ' + s + ' 秒后自动继续，请勿关闭本页面');
         pushView();
         return { cooldown: true, seconds: s, reason };
       }
