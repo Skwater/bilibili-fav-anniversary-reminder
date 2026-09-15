@@ -23,7 +23,14 @@ const mem = {
   pendingFolderIds: null, // 上述待接续请求的自选收藏夹（若有）
   pendingFoldersOnly: false // 本次只刷新收藏夹列表（不扫内容）
 };
-const loginInfo = { mid: 0, ok: false, error: '', checkedAt: 0 };
+const loginInfo = {
+  mid: 0,
+  ok: false,
+  error: '',
+  checkedAt: 0,    // 仅在拿到明确结论（已登录 / 明确未登录）时写入
+  checking: false, // 登录检查飞行中：此时不得判定为“未登录”
+  failedAt: 0      // 连接失败时间（非未登录），用于短 TTL 重试
+};
 const homeTabs = new Map();   // tabId -> lastSeen
 let latestHomeTabId = null;
 let refreshBusy = false;
@@ -204,27 +211,51 @@ async function proxyFetch(url) {
   return { ok: false, error: 'PROXY_REBIND_FAILED' };
 }
 
-/* ---------------- 登录态 ---------------- */
+/* ---------------- 登录态 ----------------
+   规则（修复“把连不上当成未登录”与“检查飞行中被判未登录”）：
+   - 只有拿到明确结论才写 checkedAt：已登录 或 明确未登录；
+   - 连接失败只记 error + failedAt，保持“未知”，绝不当成未登录，也不清 meta.mid；
+   - checking 期间 buildView 不判定为未登录（有 mid 时按已登录兜底）；
+   - 成功后缓存 10 分钟；未确认/未登录只短缓存 30 秒，便于自动恢复。 */
 async function refreshLogin(force) {
   const now = Date.now();
-  if (!force && loginInfo.checkedAt && (now - loginInfo.checkedAt) < CFG.NAV_REFRESH_MS) return;
-  loginInfo.checkedAt = now;
+  if (loginInfo.checking) return;   // 已有一次检查在飞行中，避免并发
+  if (!force) {
+    const last = Math.max(loginInfo.checkedAt || 0, loginInfo.failedAt || 0);
+    const ttl = loginInfo.ok ? CFG.NAV_REFRESH_MS : CFG.NAV_FAIL_RETRY_MS;
+    if (last && (now - last) < ttl) return;
+  }
+  loginInfo.checking = true;
   setFlow('正在检查登录状态…');
-  const res = await proxyFetch(CFG.API.NAV);
-  if (!res.ok) {
-    loginInfo.ok = false; loginInfo.mid = 0;
-    loginInfo.error = res.error === 'NO_HOME_TAB' ? '' : ('请求失败: ' + (res.error || res.status || ''));
+  let res = null;
+  try {
+    res = await proxyFetch(CFG.API.NAV);
+  } catch (e) {
+    res = { ok: false, error: String((e && e.message) || e) };
+  }
+  loginInfo.checking = false;
+
+  if (!res || !res.ok) {
+    // 连接失败（注入失败/超时/找不到标签）：不是未登录 —— 不写 checkedAt、不清 mid
+    loginInfo.ok = false;
+    loginInfo.error = (res && res.error === 'NO_HOME_TAB')
+      ? '未找到可用的哔哩哔哩页面标签'
+      : ('请求失败: ' + ((res && (res.error || res.status)) || '未知错误'));
+    loginInfo.failedAt = Date.now();
     setFlow('无法连接 B 站接口：' + loginInfo.error);
-    mem.meta.mid = 0; await persistMeta();
+    log('登录检查失败（按“未知”处理，不算未登录）：', loginInfo.error);
     return;
   }
   const j = res.json || {};
   if (j.code === 0 && j.data && j.data.isLogin) {
     loginInfo.ok = true; loginInfo.mid = j.data.mid || 0; loginInfo.error = '';
+    loginInfo.checkedAt = Date.now(); loginInfo.failedAt = 0;
     setFlow('已登录，准备读取收藏夹…');
     mem.meta.mid = loginInfo.mid; await persistMeta();
   } else {
+    // 明确未登录（isLogin=false / -101 等）
     loginInfo.ok = false; loginInfo.mid = 0; loginInfo.error = '';
+    loginInfo.checkedAt = Date.now(); loginInfo.failedAt = 0;
     setFlow('未登录哔哩哔哩');
     mem.meta.mid = 0; await persistMeta();
   }
@@ -791,11 +822,15 @@ async function runRefresh() {
     if (!latestHomeTabId) { log('刷新中止：无首页标签页'); return; }
     setFlow('开始同步…');
     log('刷新开始');
-    pushView();   // 立即推一次，让浮层马上出现“同步中”反馈
+    // await：确保“同步中”视图在登录检查之前生成完毕，避免与检查态交错
+    await pushView();
 
     // 登录态 + 收藏夹列表
     await refreshLogin(false);
-    if (!loginInfo.ok) { log('刷新中止：未登录'); pushView(); return; }
+    if (!loginInfo.ok) {
+      log('刷新中止：', loginInfo.error ? ('无法连接接口（' + loginInfo.error + '）') : '未登录');
+      pushView(); return;
+    }
     log('登录检查通过，mid =', loginInfo.mid);
 
     // 仅“刷新收藏夹”：拉最新夹列表即返回，不扫内容
@@ -855,7 +890,9 @@ async function runRefresh() {
     pushView();
   } catch (err) {
     if (err && err.kind === 'LOGIN') {
-      loginInfo.ok = false; loginInfo.mid = 0;
+      // 接口明确返回未登录/登录失效：这是“明确未登录”的结论
+      loginInfo.ok = false; loginInfo.mid = 0; loginInfo.error = '';
+      loginInfo.checkedAt = Date.now(); loginInfo.failedAt = 0;
       mem.meta.mid = 0; await persistMeta();
       setFlow('登录已失效，请重新登录哔哩哔哩');
     } else if (err && err.kind === 'STOP') {
@@ -994,9 +1031,18 @@ async function buildView() {
   const enabled = enabledFolders();
   const syncing = refreshBusy || (flowCtx != null);
 
+  // 登录态判定：只有“明确未登录”才是 'no'；检查飞行中与连接失败都不判未登录
   let loginState = 'unknown';
-  if (loginInfo.checkedAt) loginState = loginInfo.ok ? 'ok' : 'no';
-  else if (mem.meta.mid) loginState = 'ok';
+  if (loginInfo.checking) {
+    // 检查中：有 mid（此前确认过登录）或内存 ok 即按已登录，避免闪现“未登录”
+    loginState = (loginInfo.ok || mem.meta.mid) ? 'ok' : 'unknown';
+  } else if (loginInfo.checkedAt) {
+    loginState = loginInfo.ok ? 'ok' : 'no';
+  } else if (loginInfo.failedAt) {
+    loginState = 'unknown';   // 连接失败：交给 loginError 显示“无法连接”，不是未登录
+  } else if (mem.meta.mid) {
+    loginState = 'ok';        // 尚未检查过，但存在历史登录痕迹
+  }
 
   // 长期未全量提醒：距上次全量 > 30 天、距上次提醒 > 7 天、且设置开启
   const lastFullAgo = mem.meta.lastFullSyncAt ? (Date.now() - mem.meta.lastFullSyncAt * 1000) : null;
@@ -1096,6 +1142,11 @@ async function handle(msg, sender) {
           await refreshLogin(false);
           await ensureFolderList(false);
         } catch (e) { log('首次预取收藏夹列表失败:', e); }
+      } else if (!loginInfo.ok && !loginInfo.checking) {
+        // 已同步用户：当前结论不是“已确认登录”（未检查/曾失败/明确未登录）时，
+        // 借打开首页的机会复核一次，使错误提示能自愈。
+        // refreshLogin 内部带 TTL（成功 10 分钟 / 未确认或未登录 30 秒），不会频繁请求。
+        try { await refreshLogin(false); } catch (e) { log('首页登录复核失败:', e); }
       }
       // 接续：用户曾在“无 B 站标签”时点了同步 → 本页就是刚自动打开的首页，执行它
       if (mem.pendingManual) {
@@ -1131,6 +1182,14 @@ async function handle(msg, sender) {
 
     case MSG.GET_VIEW:
       return buildView();
+
+    case MSG.CHECK_LOGIN: {
+      // 手动重试登录检查：跳过 TTL 立即复查（“无法连接”卡上的“重试”按钮）
+      await refreshLogin(true);
+      const lv = await buildView();
+      pushView();
+      return lv;
+    }
 
     case MSG.SYNC_NOW: {
       log('收到同步请求:', { folderIds: (msg.folderIds || []).length, full: !!msg.full, scope: msg.scope || 'all', force: !!msg.force, fromContent: !!(sender && sender.tab) });

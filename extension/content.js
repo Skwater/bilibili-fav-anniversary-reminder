@@ -264,10 +264,12 @@ function render(v) {
     }
     return;
   }
-  // 2. 登录探测异常（多为网络/跨域）
+  // 2. 登录探测异常（多为网络/跨域）——注意：这不是“未登录”
   if (v.loginState === 'unknown' && v.loginError) {
     initUserStarted = false;
-    show(stateCard('⚠️', '无法连接哔哩哔哩接口', v.loginError + '（若持续出现请打开 bilibili.com 页面重试）', []));
+    show(stateCard('⚠️', '无法连接哔哩哔哩接口',
+      v.loginError + '（不是登录问题；可点“重试”，或稍后自动恢复）',
+      [btn('重试', retryLoginCheck)]));
     return;
   }
 
@@ -563,6 +565,13 @@ function requestHome() {
       render(resp);
     });
   } catch (e) { /* 忽略 */ }
+}
+
+/* 手动重试登录检查（跳过后台 TTL，立即复查） */
+function retryLoginCheck() {
+  safeSend({ type: MSG.CHECK_LOGIN }, (resp) => {
+    if (resp && resp.v) render(resp);
+  });
 }
 
 /* ---------------- 消息：后台推送视图 ---------------- */

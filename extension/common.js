@@ -34,7 +34,8 @@ const CFG = {
   },
 
   FOLDER_LIST_REFRESH_MS: 6 * 3600 * 1000, // 收藏夹列表刷新间隔
-  NAV_REFRESH_MS: 10 * 60 * 1000,   // 登录态检查缓存
+  NAV_REFRESH_MS: 10 * 60 * 1000,   // 登录检查成功后的缓存时长
+  NAV_FAIL_RETRY_MS: 30 * 1000,     // 登录检查失败/未确认后的重试间隔（短缓存，避免抖动被钉死）
   PAGE_SIZE: 20,                    // resource/list 每页数量（上限 20）
   PAGE_GAP_MS: 450,                 // 页间基础间隔（+随机抖动 0~150ms）
   MAX_RETRY: 3,                     // 单页最大重试次数
@@ -60,6 +61,7 @@ const MSG = {
   CANCEL_SYNC: 'CANCEL_SYNC',       // 终止当前同步（含取消自动续传）
   REFRESH_FOLDERS: 'REFRESH_FOLDERS', // 仅刷新收藏夹列表（不扫内容）
   SET_DEBUG_DATE: 'SET_DEBUG_DATE', // 设置模拟日期 {date:''|'YYYY-MM-DD'}
+  CHECK_LOGIN: 'CHECK_LOGIN',       // 手动重试登录检查（跳过 TTL，立即复查）
   DEBUG_FORCE: 'DEBUG_FORCE',       // 调试：清除当日去重标记并重弹
   MARK_FULLSYNC_REMINDED: 'MARK_FULLSYNC_REMINDED', // 记录“长期未全量”提醒已展示
   LOG: 'LOG',
