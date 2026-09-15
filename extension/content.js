@@ -291,6 +291,14 @@ function render(v) {
     return;
   }
 
+  // 长期未全量提醒（>30 天，每 7 天一次，可在设置关闭）
+  if (v.fullSyncRemind && !v.syncing) {
+    show(stateCard('🔄', '已超过 30 天未全量同步',
+      '可能有已删除的收藏未及时清理，建议做一次全量同步。',
+      [btn('立即全量同步', remindFullSyncNow, true), btn('稍后', remindFullSyncLater)]));
+    return;
+  }
+
   // 4. 命中结果
   const hits = v.hits || [];
   // 同步进行中且当前无命中：显示紧凑进度卡（完成且无命中后自动隐藏）
@@ -404,6 +412,21 @@ function forceSyncNow() {
       setTimeout(requestHome, 700);
     });
   } catch (e) { /* 忽略 */ }
+}
+
+/* 长期未全量提醒：立即全量 / 稍后（两者都记录本次提醒时间，7 天后再弹） */
+function remindFullSyncNow() {
+  safeSend({ type: MSG.MARK_FULLSYNC_REMINDED });
+  const total = ((view && view.foldersDetailed) || [])
+    .filter(f => f.enabled)
+    .reduce((s, f) => s + (f.mediaCount || 0), 0);
+  if (total > CFG.FULL_SYNC_CONFIRM_THRESHOLD &&
+      !confirm(`本次全量同步将处理约 ${total} 条收藏，可能需要较长时间，是否继续？`)) return;
+  startSyncNow();
+}
+function remindFullSyncLater() {
+  safeSend({ type: MSG.MARK_FULLSYNC_REMINDED });
+  hide();
 }
 
 /* 首次同步“自选收藏夹”向导卡：区分 我创建的 / 追更的 */

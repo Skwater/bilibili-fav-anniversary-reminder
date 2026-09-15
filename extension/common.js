@@ -22,6 +22,7 @@ const CFG = {
     rateWaitMs: 15 * 60 * 1000,   // 412 风控冷却（默认 15 分钟，设置页可改）
     burstPauseMs: 5 * 60 * 1000,  // 单段配额暂停（默认 5 分钟，设置页可改）
     burstPages: 120,              // 每段连续请求页数配额（默认 120，设置页可改）
+    fullSyncRemind: true,         // 超过 30 天未全量同步时提醒（默认开，设置页可关）
     debugDate: ''        // 调试用“模拟今天”：''=真实今天；否则 'YYYY-MM-DD'
   },
 
@@ -43,7 +44,9 @@ const CFG = {
   PROXY_TIMEOUT_MS: 20000,          // 单次代发请求超时
   CURSOR_TTL_MS: 6 * 3600 * 1000,   // 断点游标有效期
   BOOT_DELAY_MS: 3500,             // 打开首页后延迟首次显示浮层（避开“未登录”闪变）
-  FULL_SYNC_CONFIRM_THRESHOLD: 5000 // 全量同步条目数超过此阈值时，先确认提醒耗时
+  FULL_SYNC_CONFIRM_THRESHOLD: 5000, // 全量同步条目数超过此阈值时，先确认提醒耗时
+  FULL_SYNC_STALE_MS: 30 * 24 * 3600 * 1000,   // 距上次全量超过此值视为“长期未全量”
+  FULL_SYNC_REMIND_GAP_MS: 7 * 24 * 3600 * 1000 // 全量提醒最小间隔（7 天）
 };
 
 const MSG = {
@@ -58,6 +61,7 @@ const MSG = {
   REFRESH_FOLDERS: 'REFRESH_FOLDERS', // 仅刷新收藏夹列表（不扫内容）
   SET_DEBUG_DATE: 'SET_DEBUG_DATE', // 设置模拟日期 {date:''|'YYYY-MM-DD'}
   DEBUG_FORCE: 'DEBUG_FORCE',       // 调试：清除当日去重标记并重弹
+  MARK_FULLSYNC_REMINDED: 'MARK_FULLSYNC_REMINDED', // 记录“长期未全量”提醒已展示
   LOG: 'LOG',
   /* background -> content */
   FETCH_URL: 'FETCH_URL',           // 让 content 代发 B 站请求

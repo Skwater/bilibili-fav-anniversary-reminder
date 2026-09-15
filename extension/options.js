@@ -151,6 +151,8 @@ async function refreshAll() {
   // 表单回填（不在输入焦点时）
   const hi = $('optHideInvalid');
   if (document.activeElement !== hi) hi.checked = settings.hideInvalid;
+  const fr = $('optFullSyncRemind');
+  if (document.activeElement !== fr) fr.checked = settings.fullSyncRemind !== false;
   const rb = document.querySelector(`input[name=feb29][value="${settings.feb29}"]`);
   if (rb) rb.checked = true;
   const sm = document.querySelector(`input[name=syncMode][value="${settings.syncMode || 'manual'}"]`);
@@ -226,6 +228,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   $('optHideInvalid').addEventListener('change', e => saveSettingsPatch({ hideInvalid: e.target.checked }));
+  $('optFullSyncRemind').addEventListener('change', e => saveSettingsPatch({ fullSyncRemind: e.target.checked }));
   document.querySelectorAll('input[name=feb29]').forEach(rb => {
     rb.addEventListener('change', () => { if (rb.checked) saveSettingsPatch({ feb29: rb.value }); });
   });

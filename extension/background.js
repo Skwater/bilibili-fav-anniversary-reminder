@@ -998,6 +998,12 @@ async function buildView() {
   if (loginInfo.checkedAt) loginState = loginInfo.ok ? 'ok' : 'no';
   else if (mem.meta.mid) loginState = 'ok';
 
+  // 长期未全量提醒：距上次全量 > 30 天、距上次提醒 > 7 天、且设置开启
+  const lastFullAgo = mem.meta.lastFullSyncAt ? (Date.now() - mem.meta.lastFullSyncAt * 1000) : null;
+  const lastRemindAgo = Date.now() - (mem.meta.fullSyncRemindAt || 0);
+  const fullSyncRemind = !!(lastFullAgo && lastFullAgo > CFG.FULL_SYNC_STALE_MS &&
+    mem.settings.fullSyncRemind !== false && lastRemindAgo > CFG.FULL_SYNC_REMIND_GAP_MS);
+
   return {
     v: 1,
     loginState,
@@ -1026,6 +1032,7 @@ async function buildView() {
     lastSyncAt: mem.meta.lastSyncAt || 0,
     syncedOnce: !!mem.meta.syncedOnce,
     syncing,
+    fullSyncRemind,
     syncLabel: flowCtx
       ? `同步中：${flowCtx.folderTitle}（${flowCtx.folderIndex}/${flowCtx.folderTotal}，${flowCtx.phase}）`
       : (refreshBusy ? '同步中…' : ''),
@@ -1223,6 +1230,13 @@ async function handle(msg, sender) {
       const effKey = effectiveKeyFor(mem.settings);
       mem.meta.shownKey = effKey;
       mem.meta.dismissedKey = effKey;
+      await persistMeta();
+      return { ok: true };
+    }
+
+    case MSG.MARK_FULLSYNC_REMINDED: {
+      // “长期未全量”提醒已展示（无论用户选立即全量还是稍后）：记录时间，7 天后再弹
+      mem.meta.fullSyncRemindAt = Date.now();
       await persistMeta();
       return { ok: true };
     }
