@@ -349,9 +349,9 @@ async function ensureFolderList(force) {
 
 /* ---------------- 同步引擎 ---------------- */
 function needFullCycle() {
-  if (mem.pendingFull) return true;
-  if (!mem.meta.lastFullSyncAt) return true;
-  return (Date.now() - mem.meta.lastFullSyncAt * 1000) > CFG.FULL_SYNC_MS;
+  if (mem.pendingFull) return true;          // 手动全量 / 首次向导全量
+  if (!mem.meta.lastFullSyncAt) return true; // 初次（从未全量过）
+  return false;                               // 不再按固定周期自动全量
 }
 
 function idKeyOf(m) { return (m.bvid && m.bvid !== '') ? m.bvid : ('a' + m.id); }

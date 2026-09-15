@@ -32,7 +32,6 @@ const CFG = {
     MEDIA_LIST: 'https://api.bilibili.com/x/v3/fav/resource/list'
   },
 
-  FULL_SYNC_MS: 24 * 3600 * 1000,   // 距上次全量超过 24h 触发全量重扫
   FOLDER_LIST_REFRESH_MS: 6 * 3600 * 1000, // 收藏夹列表刷新间隔
   NAV_REFRESH_MS: 10 * 60 * 1000,   // 登录态检查缓存
   PAGE_SIZE: 20,                    // resource/list 每页数量（上限 20）
