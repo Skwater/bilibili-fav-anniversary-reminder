@@ -2,9 +2,11 @@
 
 > Chrome 扩展（Manifest V3）· 在哔哩哔哩首页提醒你收藏夹里“历史上的今天”发布的投稿。
 
-> 🛒 **一键安装**：[Chrome 应用商店 · 哔哩朝花夕拾](https://chromewebstore.google.com/detail/kgamlldkccpldahaohnbnnfdnegphppe)（当前版本 v0.1.3）
+> 🛒 **一键安装**：[Chrome 应用商店 · 哔哩朝花夕拾](https://chromewebstore.google.com/detail/kgamlldkccpldahaohnbnnfdnegphppe)（当前版本 v0.1.4）
 
 打开 `https://www.bilibili.com/` 时，插件按你收藏夹内**视频投稿的发布时间**与今天（月-日）做匹配——如果若干年前的今天你收藏过某些投稿，右下角会弹出一张"X 年前的今天"卡片，点击可回到视频。
+
+![哔哩朝花夕拾 · 首页浮层提醒](assets/screenshot-1.png)
 
 > 非哔哩哔哩官方产品，与 B 站无任何关联；请遵守 B 站用户协议合理使用。
 > 本项目由 **DeepSeek（AI）参与设计与实现**，仅供学习交流参考。
@@ -20,12 +22,6 @@
 - 🛡️ **风控克制**：页间隔/每段页数/暂停时长/412 冷却均可在「高级设置」调整；412 命中后冷却自动续传
 - 🧪 **模拟日期**：随时用“模拟今天”验证任意日期的命中，无需等真日子
 - 🔒 **隐私友好**：数据全部本地存储（chrome.storage.local），不读取/不存储 Cookie，不上传第三方
-
-## 工作原理（简要）
-
-- 采用“方案 B”：不申请 `cookies` 权限；
-- background 通过 `chrome.scripting` 把 fetch **注入已打开的 B 站页面主世界**执行（与浏览器一致地携带登录态），因此**同步时需要至少一个 B 站页面标签页**（任意 B 站页面即可）；
-- 请求只发往 bilibili.com 系域名；数据仅存本机。
 
 ## 安装
 
@@ -53,8 +49,8 @@
 
 ```
 extension/          # 扩展本体（manifest / common / background / content / popup / options / icons）
-tools/              # 自检脚本 selftest.js、图标生成 gen_icons.py
-assets/             # 设计源图（logo.png）；截图等素材仅本地保留，不入库
+tools/              # 自检脚本 selftest.js
+assets/             # 图标源图与宣传截图（logo.png、screenshot-1.png）
 需求梳理.md / 开发调试说明.md   # 设计与调试文档（本地，不入库）
 ```
 
@@ -76,7 +72,5 @@ node tools/selftest.js
 ## 许可证
 
 [GPL-3.0](LICENSE)
-
-本项目以 **GPL-3.0** 开源：任何使用、修改、再分发都必须以同样 GPL 许可证开源（不允许闭源商用衍生）；仅用于个人学习与自用请遵循其条款。
 
 Copyright (c) 2026 哔哩朝花夕拾 contributors

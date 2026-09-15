@@ -3,7 +3,7 @@
  * 哔哩朝花夕拾 - background (MV3 Service Worker)
  * 职责：数据与计算的唯一权威
  *   - 持有本地缓存（storage.local）
- *   - 通过 content script 代发 B 站请求（方案 B，无 cookies 权限）
+ *   - 通过注入页面主世界的 fetch 读取 B 站数据（凭据由浏览器自动携带）
  *   - 同步引擎（增量优先 + 全量兜底 + 断点续传）
  *   - “历史上的今天”匹配（支持调试用模拟日期）
  *   - 向 content 推送视图、响应 popup/options
@@ -140,11 +140,11 @@ function persistCursor(cursor) { mem.syncCursor = cursor; return storageSet({ [C
 /* 参与同步/匹配的收藏夹：仅看用户开关；不可读的夹仍每轮重试（成功即恢复） */
 function enabledFolders() { return mem.folders.filter(f => f.enabled !== false); }
 
-/* ---------------- 请求代理（方案 B：页面主世界执行 fetch） ----------------
+/* ---------------- 请求代理（在页面主世界执行 fetch） ----------------
  * 注意：不能直接在 content script 隔离世界里 fetch —— Chrome 对隔离世界的
  * 跨源凭据请求与页面主世界行为不同（主世界 = 你在控制台手动验证 CORS 的环境）。
  * 因此通过 chrome.scripting 注入到页面 MAIN world 执行，与 B 站自身请求一致。
- * 仍不读取/不存储任何 Cookie（无 cookies 权限），凭据由浏览器自动携带。
+ * 扩展自身不读取、不存储任何 Cookie，凭据由浏览器自动携带。
  */
 /* 该函数会被序列化注入 MAIN world 执行，必须自包含 */
 function mainFetch(url) {
@@ -1111,7 +1111,7 @@ async function pushView() {
   } catch (e) { /* 忽略 */ }
 }
 
-/* 找一个可注入取数的 B 站标签（方案 B 只需 host 权限，任意 B 站页面均可主世界注入 fetch）：
+/* 找一个可注入取数的 B 站标签（任意 B 站页面均可主世界注入 fetch）：
    ① 优先复用当前活动标签；② 其次任意已打开的 B 站标签；③ 都没有才需新开 */
 async function findHomeTab() {
   const isBili = u => /^https:\/\/[^/]*\.?bilibili\.com\//i.test(u || '');
