@@ -21,12 +21,13 @@ async function loadAll() {
 function renderView(v) {
   view = v;
   const login = $('loginStatus');
-  if (v.loginState === 'ok') login.textContent = '✅ 已登录哔哩哔哩';
+  if (v.loginState === 'ok') login.textContent = '✅ 已登录哔哩哔哩' + (v.accountMid ? `（UID ${v.accountMid}）` : '');
   else if (v.loginState === 'no') login.textContent = '⚠️ 未登录哔哩哔哩，请先登录';
   else login.textContent = '登录状态未知' + (v.loginError ? '：' + v.loginError : '');
 
   const sync = $('syncStatus');
   const parts = [`收藏夹：${v.folders.enabled}/${v.folders.total} 个启用`, `条目：${v.folders.items} 条`];
+  if (v.firstSetupReason === 'accountChanged') parts.push('账号已切换，请回到 B 站首页重新选择收藏夹');
   parts.push(v.syncing ? '同步中…' : (v.lastSyncAt ? '最近同步：' + fmtDateTime(v.lastSyncAt) : '尚未同步'));
   sync.textContent = parts.join('　');
   if (v.syncing && v.syncLabel) sync.textContent += '\n' + v.syncLabel;

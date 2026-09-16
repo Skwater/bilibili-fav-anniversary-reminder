@@ -47,6 +47,7 @@ let forceSkipCooldown = false;      // 用户点击“立即同步”：跳过�
 let cancelSync = false;             // 用户请求终止当前同步
 let clearAfterSync = false;         // 同步停稳后清空全部数据
 let loginCheckPromise = null;       // 登录检查 single-flight
+let pendingAccountSwitch = null;    // 同步运行中发现换号：停稳后再原子清理旧账号资源
 const RESUME_ALARM = 'dsh-sync-resume';
 let viewPushTimer = null;
 
@@ -194,6 +195,7 @@ async function resetAllData() {
   mem.syncCursor = null;
   mem.syncSession = null;
   clearPendingRequests();
+  pendingAccountSwitch = null;
   loginInfo.mid = 0;
   loginInfo.ok = false;
   loginInfo.error = '';
@@ -203,6 +205,87 @@ async function resetAllData() {
   pauseReason = '';
   flowCtx = null;
   setFlow('本地数据已清空');
+}
+
+/* 换号只清“账号资源”，完整保留用户设置。meta.mid 表示当前缓存归属，
+   因此明确退出登录时也不能把它清零，否则下次登录无法判断是否换号。 */
+async function resetForAccountSwitch(newMid) {
+  const mid = Number(newMid) || 0;
+  if (!mid) return false;
+  try { await chrome.alarms.clear(RESUME_ALARM); } catch (e) {}
+
+  const nextMeta = {
+    mid,
+    accountChangedAt: Date.now(),
+    firstSetupReason: 'accountChanged'
+  };
+  // 同批替换四类账号数据：不能先 remove 再逐项写，避免中途留下半清状态。
+  await storageSet({
+    [CFG.KEY_META]: nextMeta,
+    [CFG.KEY_FOLDERS]: [],
+    [CFG.KEY_ITEMS]: {},
+    [CFG.KEY_SYNC]: { cursor: null, session: null }
+  });
+
+  mem.meta = nextMeta;
+  mem.folders = [];
+  mem.items = {};
+  mem.syncCursor = null;
+  mem.syncSession = null;
+  clearPendingRequests();
+  cancelSync = false;
+  rateUntil = 0;
+  pauseReason = '';
+  pageBudgetUsed = 0;
+  refreshAttempts = 0;
+  flowCtx = null;
+  setFlow('检测到 B 站账号切换，旧账号收藏数据已清理，请重新选择收藏夹');
+  log('检测到账号切换：已清理旧账号资源并保留设置，新 mid =', mid);
+  return true;
+}
+
+async function acceptAuthenticatedMid(newMid) {
+  const mid = Number(newMid) || 0;
+  const oldMid = Number(mem.meta.mid) || 0;
+  if (!mid) return { accountChanged: false };
+  if (!oldMid) {
+    mem.meta.mid = mid;
+    await persistMeta();
+    return { accountChanged: false, firstAccount: true };
+  }
+  if (oldMid === mid) return { accountChanged: false };
+
+  if (refreshBusy) {
+    pendingAccountSwitch = { mid, oldMid, detectedAt: Date.now() };
+    cancelSync = true;
+    setFlow('检测到 B 站账号切换，正在停止旧账号同步…');
+    return { accountChanged: true, deferred: true };
+  }
+  await resetForAccountSwitch(mid);
+  return { accountChanged: true, deferred: false };
+}
+
+async function finishPendingAccountSwitch() {
+  if (!pendingAccountSwitch) return false;
+  const pending = pendingAccountSwitch;
+  pendingAccountSwitch = null;
+  await resetForAccountSwitch(pending.mid);
+  // runRefresh 内发现换号时，原 HOME_OPEN 已经结束；主动预取新账号夹列表，
+  // 让首页能直接重新展示首次选择向导。
+  if (latestHomeTabId && loginInfo.ok) {
+    try {
+      await ensureFolderList(true);
+    } catch (err) {
+      if (err && err.kind === 'RATE') {
+        const wait = settingMs('rateWaitMs', CFG.RATE_412_WAIT_MS);
+        await holdUntil(wait, '412');
+        setFlow('新账号收藏夹触发风控，冷却后可重新打开首页继续');
+      } else {
+        log('换号后预取收藏夹失败:', err);
+      }
+    }
+  }
+  return true;
 }
 
 /* 参与同步/匹配的收藏夹：仅看用户开关；不可读的夹仍每轮重试（成功即恢复） */
@@ -325,14 +408,16 @@ async function refreshLogin(force) {
     if (j.code === 0 && j.data && j.data.isLogin === true) {
       loginInfo.ok = true; loginInfo.mid = j.data.mid || 0; loginInfo.error = '';
       loginInfo.checkedAt = Date.now(); loginInfo.failedAt = 0;
-      setFlow('已登录，准备读取收藏夹…');
-      mem.meta.mid = loginInfo.mid; await persistMeta();
+      const identity = await acceptAuthenticatedMid(loginInfo.mid);
+      if (!identity.accountChanged) setFlow('已登录，准备读取收藏夹…');
+      return Object.assign({ state: 'ok', mid: loginInfo.mid }, identity);
     } else if (j.code === -101 || (j.code === 0 && j.data && j.data.isLogin === false)) {
-      // 只有 nav 明确给出未登录结论时才清登录痕迹；验证码/风控/业务异常均属未知。
+      // 明确退出只改变运行时登录态；meta.mid 是本地缓存归属，必须保留，
+      // 才能在之后登录另一个账号时可靠识别换号。
       loginInfo.ok = false; loginInfo.mid = 0; loginInfo.error = '';
       loginInfo.checkedAt = Date.now(); loginInfo.failedAt = 0;
       setFlow('未登录哔哩哔哩');
-      mem.meta.mid = 0; await persistMeta();
+      return { state: 'no' };
     } else {
       loginInfo.ok = false;
       loginInfo.checkedAt = 0;
@@ -341,6 +426,7 @@ async function refreshLogin(force) {
       loginInfo.failedAt = Date.now();
       setFlow('无法确认登录状态：' + loginInfo.error);
       log('登录检查返回非明确结论（按“未知”处理）：', loginInfo.error);
+      return { state: 'unknown' };
     }
   })();
   loginCheckPromise = task;
@@ -998,7 +1084,7 @@ async function runSyncPass(folders, forceFull) {
   await persistFolders();
 }
 
-async function runRefresh() {
+async function runRefresh(verifiedMid) {
   // “仅刷新收藏夹列表”标记：先取出并复位，避免被冷却期吞掉后残留影响后续触发
   const foldersOnly = mem.pendingFoldersOnly || !!mem.meta.pendingFoldersOnly;
   mem.pendingFoldersOnly = false;
@@ -1040,8 +1126,14 @@ async function runRefresh() {
     // await：确保“同步中”视图在登录检查之前生成完毕，避免与检查态交错
     await pushView();
 
-    // 登录态 + 收藏夹列表
-    await refreshLogin(false);
+    // 每轮内容操作都必须确认 mid，不能用 10 分钟登录缓存判断账号归属。
+    // 手动操作若刚在同一消息内完成强制确认，则复用这次结果，避免连续请求 nav。
+    const identityJustVerified = verifiedMid && loginInfo.ok && loginInfo.mid === verifiedMid &&
+      (Date.now() - loginInfo.checkedAt) < 5000;
+    const loginResult = identityJustVerified
+      ? { state: 'ok', mid: loginInfo.mid, accountChanged: false }
+      : await refreshLogin(true);
+    if (loginResult && loginResult.accountChanged) return;
     if (cancelSync) throw Object.assign(new Error('cancel'), { kind: 'STOP' });
     if (!loginInfo.ok) {
       log('刷新中止：', loginInfo.error ? ('无法连接接口（' + loginInfo.error + '）') : '未登录');
@@ -1131,6 +1223,8 @@ async function runRefresh() {
       if (listJustOk) {
         mem.meta.lastSyncAt = Date.now() / 1000;
         mem.meta.syncedOnce = true;
+        delete mem.meta.firstSetupReason;
+        delete mem.meta.accountChangedAt;
         await persistMeta();
         await clearSyncState();
       } else {
@@ -1154,6 +1248,8 @@ async function runRefresh() {
     if (completedSession.full && completedSession.coversAll && skippedCount === 0) mem.meta.lastFullSyncAt = Date.now() / 1000;
     mem.meta.lastSyncAt = Date.now() / 1000;
     mem.meta.syncedOnce = true;
+    delete mem.meta.firstSetupReason;
+    delete mem.meta.accountChangedAt;
     if (completedSession.daily) mem.meta.autoSyncKey = todayKey();
     await persistMeta();
     await clearSyncState();
@@ -1163,7 +1259,7 @@ async function runRefresh() {
       // 接口明确返回未登录/登录失效：这是“明确未登录”的结论
       loginInfo.ok = false; loginInfo.mid = 0; loginInfo.error = '';
       loginInfo.checkedAt = Date.now(); loginInfo.failedAt = 0;
-      mem.meta.mid = 0; await persistMeta();
+      // 不清 meta.mid：它表示现有缓存属于谁，退出登录不等于换号。
       setFlow('登录已失效，请重新登录哔哩哔哩');
     } else if (err && err.kind === 'STOP') {
       // 用户终止：取消自动续传/重试，清理标记与游标
@@ -1206,6 +1302,11 @@ async function runRefresh() {
     if (clearAfterSync) {
       clearAfterSync = false;
       await resetAllData();
+      pushView();
+      return;
+    }
+    if (pendingAccountSwitch) {
+      await finishPendingAccountSwitch();
       pushView();
       return;
     }
@@ -1349,6 +1450,8 @@ async function buildView() {
       : (refreshBusy ? '同步中…' : ''),
     note: flowNote || '',
     syncMode: mem.settings.syncMode || 'manual',
+    accountMid: mem.meta.mid || 0,
+    firstSetupReason: mem.meta.firstSetupReason || '',
     cooldownSec: Math.ceil(coolingMs() / 1000) || 0,
     cooldownReason: (mem.meta.resumeReason || pauseReason || ''),
     shownKey: mem.meta.shownKey || null,
@@ -1391,6 +1494,31 @@ async function findHomeTab() {
   return null;
 }
 
+/* 手动操作先绑定一个真实 B 站标签并确认账号，再判断旧冷却状态。
+   这样旧账号的 412/配额暂停不会阻挡新账号进入首次选择。 */
+async function prepareAccountForAction(tab) {
+  if (!tab) return null;
+  homeTabs.set(tab.id, Date.now());
+  latestHomeTabId = tab.id;
+  let loginResult = null;
+  try {
+    loginResult = await refreshLogin(true);
+  } catch (e) {
+    log('操作前账号确认失败:', e);
+    return null;
+  }
+  if (!loginResult || !loginResult.accountChanged || loginResult.deferred) return loginResult;
+
+  // 空闲期换号已完成清理；预取新账号夹列表后停在向导，不执行原账号发起的操作。
+  try {
+    await ensureFolderList(false);
+  } catch (e) {
+    log('换号后预取收藏夹列表失败:', e);
+  }
+  pushView();
+  return loginResult;
+}
+
 /* ---------------- 消息 ---------------- */
 async function handle(msg, sender) {
   await ensureLoaded();
@@ -1401,17 +1529,18 @@ async function handle(msg, sender) {
         homeTabs.set(sender.tab.id, Date.now());
         latestHomeTabId = sender.tab.id;
       }
-      // 首次同步（尤其手动模式）前：先轻量拉一次收藏夹列表，供浮层“自选收藏夹”向导使用
-      if (!mem.meta.syncedOnce && mem.folders.length === 0) {
-        try {
-          await refreshLogin(false);
-          await ensureFolderList(false);
-        } catch (e) { log('首次预取收藏夹列表失败:', e); }
-      } else if (!loginInfo.ok && !loginInfo.checking) {
-        // 已同步用户：当前结论不是“已确认登录”（未检查/曾失败/明确未登录）时，
-        // 借打开首页的机会复核一次，使错误提示能自愈。
-        // refreshLogin 内部带 TTL（成功 10 分钟 / 未确认或未登录 30 秒），不会频繁请求。
-        try { await refreshLogin(false); } catch (e) { log('首页登录复核失败:', e); }
+      // 首页是账号切换的主检测点：必须绕过登录缓存拿到当前 mid。
+      let loginResult = null;
+      try { loginResult = await refreshLogin(true); } catch (e) { log('首页登录复核失败:', e); }
+      if (loginResult && loginResult.accountChanged && loginResult.deferred) return buildView();
+
+      // 首次或换号后先拉收藏夹列表，供“自选收藏夹”向导使用。
+      if (loginInfo.ok && !mem.meta.syncedOnce && mem.folders.length === 0) {
+        try { await ensureFolderList(false); } catch (e) { log('首次预取收藏夹列表失败:', e); }
+      }
+      // 换号后无论保留的自动同步模式是什么，都先让用户确认新账号收藏夹范围。
+      if (mem.meta.firstSetupReason === 'accountChanged') {
+        return buildView();
       }
       // 接续：用户曾在“无 B 站标签”时点了同步 → 本页就是刚自动打开的首页，执行它
       if (mem.meta.pendingFoldersOnly) {
@@ -1469,6 +1598,13 @@ async function handle(msg, sender) {
     case MSG.SYNC_NOW: {
       log('收到同步请求:', { folderIds: (msg.folderIds || []).length, full: !!msg.full, scope: msg.scope || 'all', force: !!msg.force, fromContent: !!(sender && sender.tab) });
       const force = !!msg.force;
+      if (refreshBusy) return { started: false, busy: true };
+      // 有可用页面时先识别账号；若已换号，旧账号冷却和待同步意图都必须作废。
+      const tab = pickSenderBiliTab(sender) || await findHomeTab();
+      const identity = await prepareAccountForAction(tab);
+      if (identity && identity.accountChanged) {
+        return { started: false, accountChanged: true, deferred: !!identity.deferred };
+      }
       const wait = coolingMs();
       if (wait > 0 && !force) {
         const s = Math.max(1, Math.ceil(wait / 1000));
@@ -1480,7 +1616,6 @@ async function handle(msg, sender) {
         pushView();
         return { started: false, cooldown: true, seconds: s, reason };
       }
-      if (refreshBusy) return { started: false, busy: true };
       if (force) forceSkipCooldown = true;   // 交由 runRefresh 清除冷却并开跑
       // 空闲时立即把请求意图落盘，避免“自动打开首页”途中 SW 重启后丢失 full/scope。
       if (!refreshBusy && !mem.syncSession) {
@@ -1503,7 +1638,6 @@ async function handle(msg, sender) {
         mem.pendingScope = 'all';
       }
       // 复用真实 B 站页面（content 向导 / popup 正好点在 B 站上）；否则查已打开的 B 站标签
-      const tab = pickSenderBiliTab(sender) || await findHomeTab();
       // 普通同步必须清掉可能由旧的“仅刷新列表”请求留下的标记，否则 HOME_OPEN
       // 会把这次内容同步误判成只刷新收藏夹并提前结束。
       if (mem.meta.pendingFoldersOnly) {
@@ -1518,18 +1652,21 @@ async function handle(msg, sender) {
         log('无 B 站标签，自动打开首页（同步待接续）');
         return { openingHome: true };
       }
-      homeTabs.set(tab.id, Date.now());
-      latestHomeTabId = tab.id;
       if (Array.isArray(msg.folderIds)) {
         await applyFolderSelection(msg.folderIds);
       }
-      runRefresh();
+      runRefresh(loginInfo.mid);
       log('同步请求已受理');
       return { started: true };
     }
 
     case MSG.REFRESH_FOLDERS: {
       if (refreshBusy) return { started: false, busy: true };
+      const tab = pickSenderBiliTab(sender) || await findHomeTab();
+      const identity = await prepareAccountForAction(tab);
+      if (identity && identity.accountChanged) {
+        return { started: false, accountChanged: true, deferred: !!identity.deferred };
+      }
       // 冷却中先拦截：给出剩余秒数，避免“已受理”但实际被 runRefresh 内部吞掉
       const wait2 = coolingMs();
       if (wait2 > 0) {
@@ -1546,16 +1683,13 @@ async function handle(msg, sender) {
       mem.pendingFoldersOnly = true;
       mem.meta.pendingFoldersOnly = true;
       await persistMeta();
-      const tab = pickSenderBiliTab(sender) || await findHomeTab();
       if (!tab) {
         mem.pendingManual = true;
         chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
         log('无 B 站标签，打开首页（刷新收藏夹待接续）');
         return { openingHome: true };
       }
-      homeTabs.set(tab.id, Date.now());
-      latestHomeTabId = tab.id;
-      runRefresh();
+      runRefresh(loginInfo.mid);
       log('收藏夹列表刷新请求已受理');
       return { started: true };
     }

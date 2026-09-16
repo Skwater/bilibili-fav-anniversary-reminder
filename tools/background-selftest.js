@@ -62,7 +62,7 @@ const expose = `
 globalThis.__bgtest = {
   CFG, mem, loginInfo,
   refreshLogin, ensureFolderList, syncOneFolder, runSyncPass, runRefresh, handle,
-  fingerprintIds, folderAidSet,
+  fingerprintIds, folderAidSet, resetForAccountSwitch,
   setBurstLimit(value) { burstLimit = value; },
   clearRate() { rateUntil = 0; pauseReason = ''; delete mem.meta.resumeAt; delete mem.meta.resumeReason; },
   reset() {
@@ -86,6 +86,7 @@ globalThis.__bgtest = {
     loginInfo.checking = false;
     loginInfo.failedAt = 0;
     loginCheckPromise = null;
+    pendingAccountSwitch = null;
     latestHomeTabId = 1;
     homeTabs.clear();
     homeTabs.set(1, Date.now());
@@ -142,6 +143,46 @@ function media(id, title) {
     assert(api.loginInfo.ok === false && api.loginInfo.checkedAt === 0, '异常被当成明确未登录');
     assert(api.mem.meta.mid === 42, '历史 mid 被清除');
     assert(api.loginInfo.error.includes('-412'), '未保留业务错误');
+  });
+
+  await test('明确退出登录保留缓存归属和账号资源', async () => {
+    api.mem.meta = { mid: 11, syncedOnce: true };
+    api.mem.folders = [{ mediaId: 1, enabled: true }];
+    api.mem.items = { BV1: { aid: 1, folderIds: [1] } };
+    fetchHandler = async () => ({ ok: true, json: { code: 0, data: { isLogin: false } } });
+    const result = await api.refreshLogin(true);
+    assert(result && result.state === 'no', '未返回明确退出状态');
+    assert(api.mem.meta.mid === 11, '退出登录错误清除了缓存所属 mid');
+    assert(api.mem.folders.length === 1 && api.mem.items.BV1, '退出登录错误清除了账号资源');
+  });
+
+  await test('明确换号清理账号资源但完整保留设置', async () => {
+    api.mem.meta = { mid: 11, syncedOnce: true, lastSyncAt: 1, shownKey: '2026-09-16' };
+    api.mem.folders = [{ mediaId: 1, enabled: true }];
+    api.mem.items = { BV1: { aid: 1, folderIds: [1] } };
+    api.mem.syncSession = { full: true, updatedAt: Date.now() };
+    api.mem.syncCursor = { mediaId: 1, pn: 2, full: true };
+    api.mem.settings = Object.assign({}, api.mem.settings, { syncMode: 'daily', debugDate: '2030-02-03' });
+    const settingsBefore = JSON.stringify(api.mem.settings);
+    store.settings = clone(api.mem.settings);
+    fetchHandler = async () => ({ ok: true, json: { code: 0, data: { isLogin: true, mid: 22 } } });
+    const result = await api.refreshLogin(true);
+    assert(result && result.accountChanged && !result.deferred, '未识别空闲期换号');
+    assert(api.mem.meta.mid === 22 && api.mem.meta.firstSetupReason === 'accountChanged', '新账号首次状态错误');
+    assert(api.mem.folders.length === 0 && Object.keys(api.mem.items).length === 0, '旧账号收藏资源未清空');
+    assert(!api.mem.syncSession && !api.mem.syncCursor, '旧账号同步状态未清空');
+    assert(JSON.stringify(api.mem.settings) === settingsBefore, '内存设置被换号清理修改');
+    assert(JSON.stringify(store.settings) === settingsBefore, '持久化设置被换号清理修改');
+  });
+
+  await test('同一账号复核不清理现有数据', async () => {
+    api.mem.meta = { mid: 11, syncedOnce: true };
+    api.mem.folders = [{ mediaId: 1, enabled: true }];
+    api.mem.items = { BV1: { aid: 1, folderIds: [1] } };
+    fetchHandler = async () => ({ ok: true, json: { code: 0, data: { isLogin: true, mid: 11 } } });
+    const result = await api.refreshLogin(true);
+    assert(result && !result.accountChanged, '同账号被误判为换号');
+    assert(api.mem.meta.syncedOnce && api.mem.folders.length === 1 && api.mem.items.BV1, '同账号数据被误清理');
   });
 
   await test('追更列表第 2 页失败时拒绝提交残缺列表', async () => {
@@ -277,6 +318,7 @@ function media(id, title) {
       daily: false, completedFolderIds: [], skippedFolderIds: [], updatedAt: Date.now()
     };
     fetchHandler = async url => {
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
       if (url.includes('/created/')) return { ok: true, json: { code: 0, data: {
         list: [{ id: 1, title: '夹', media_count: 1 }]
       } } };
@@ -292,6 +334,66 @@ function media(id, title) {
     assert(!api.mem.syncSession && !api.mem.syncCursor, '成功后同步状态未清理');
     assert(api.mem.meta.lastFullSyncAt > 1 && api.mem.meta.syncedOnce, '成功时间未更新');
     assert(api.mem.items.BV1, '全量条目未保存');
+  });
+
+  await test('同步启动时换号会停稳清理并预取新账号收藏夹', async () => {
+    api.mem.meta = { mid: 11, syncedOnce: true, lastFullSyncAt: 1 };
+    api.mem.folders = [{ mediaId: 1, title: '旧夹', mediaCount: 1, enabled: true }];
+    api.mem.items = { BV1: { aid: 1, folderIds: [1] } };
+    api.mem.syncSession = {
+      full: false, scope: 'all', folderIds: [1], completedFolderIds: [], updatedAt: Date.now()
+    };
+    api.mem.settings = Object.assign({}, api.mem.settings, { syncMode: 'daily', debugDate: '2030-02-03' });
+    const settingsBefore = JSON.stringify(api.mem.settings);
+    fetchHandler = async url => {
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 22 } } };
+      if (url.includes('/created/')) return { ok: true, json: { code: 0, data: { list: [] } } };
+      if (url.includes('/collected/')) return { ok: true, json: { code: 0, data: { list: [], count: 0, has_more: false } } };
+      throw new Error('账号切换后不应请求旧夹内容: ' + url);
+    };
+    await api.runRefresh();
+    assert(api.mem.meta.mid === 22 && api.mem.meta.firstSetupReason === 'accountChanged', '未进入新账号首次状态');
+    assert(!api.mem.meta.syncedOnce && api.mem.folders.length === 0, '旧账号收藏夹状态未清理');
+    assert(Object.keys(api.mem.items).length === 0 && !api.mem.syncSession && !api.mem.syncCursor,
+      '旧账号条目或断点残留');
+    assert(JSON.stringify(api.mem.settings) === settingsBefore, '换号停稳后设置发生变化');
+  });
+
+  await test('换号后保留自动模式但仍停在首次选择状态', async () => {
+    api.mem.meta = { mid: 11, syncedOnce: true, lastFullSyncAt: 1 };
+    api.mem.folders = [{ mediaId: 1, title: '旧夹', mediaCount: 1, enabled: true }];
+    api.mem.items = { BV1: { aid: 1, folderIds: [1] } };
+    api.mem.settings = Object.assign({}, api.mem.settings, { syncMode: 'onHome' });
+    fetchHandler = async url => {
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 22 } } };
+      if (url.includes('/created/')) return { ok: true, json: { code: 0, data: {
+        list: [{ id: 2, title: '新账号夹', media_count: 3 }]
+      } } };
+      if (url.includes('/collected/')) return { ok: true, json: { code: 0, data: { list: [], count: 0, has_more: false } } };
+      throw new Error('换号首次选择前不应开始内容同步: ' + url);
+    };
+    const view = await api.handle({ type: 'HOME_OPEN' }, { tab: { id: 1, url: 'https://www.bilibili.com/' } });
+    assert(view && view.firstSetupReason === 'accountChanged' && !view.syncedOnce, '未返回换号首次视图');
+    assert(api.mem.settings.syncMode === 'onHome', '自动同步设置未保留');
+    assert(api.mem.folders.length === 1 && api.mem.folders[0].mediaId === 2, '未预取新账号收藏夹');
+    assert(!api.mem.syncSession && Object.keys(api.mem.items).length === 0, '自动模式绕过向导启动了内容同步');
+  });
+
+  await test('旧账号冷却不会阻挡新账号进入首次选择', async () => {
+    api.mem.meta = { mid: 11, syncedOnce: true, resumeAt: Date.now() + 60000, resumeReason: '412' };
+    api.mem.folders = [{ mediaId: 1, title: '旧夹', mediaCount: 1, enabled: true }];
+    api.mem.items = { BV1: { aid: 1, folderIds: [1] } };
+    fetchHandler = async url => {
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 22 } } };
+      if (url.includes('/created/')) return { ok: true, json: { code: 0, data: { list: [] } } };
+      if (url.includes('/collected/')) return { ok: true, json: { code: 0, data: { list: [], count: 0, has_more: false } } };
+      throw new Error('换号首次选择前不应请求内容: ' + url);
+    };
+    const result = await api.handle({ type: 'SYNC_NOW', full: true, scope: 'all' }, {});
+    assert(result && result.accountChanged && !result.cooldown, '旧账号冷却仍拦截了换号初始化');
+    assert(api.mem.meta.mid === 22 && !api.mem.meta.resumeAt, '换号后未清理旧账号冷却状态');
+    assert(api.mem.meta.firstSetupReason === 'accountChanged' && !api.mem.syncSession,
+      '换号后错误沿用了原同步请求');
   });
 
   await test('普通同步不会被旧的仅刷新标记降级', async () => {
@@ -319,6 +421,7 @@ function media(id, title) {
     api.mem.meta.mid = 42;
     api.mem.meta.pendingFoldersOnly = true;
     fetchHandler = async url => {
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
       if (url.includes('/created/')) return { ok: false, status: 412, json: null };
       throw new Error('unexpected url ' + url);
     };
@@ -326,6 +429,7 @@ function media(id, title) {
     assert(api.mem.meta.pendingFoldersOnly === true && api.mem.meta.resumeAt, '412 后刷新类型或冷却丢失');
     api.clearRate();
     fetchHandler = async url => {
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
       if (url.includes('/created/')) return { ok: true, json: { code: 0, data: { list: [] } } };
       if (url.includes('/collected/')) return { ok: true, json: { code: 0, data: { list: [], count: 0, has_more: false } } };
       throw new Error('不应进入内容同步: ' + url);

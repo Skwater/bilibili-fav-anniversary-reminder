@@ -8,7 +8,7 @@ let view = null;
 
 function pillLogin(v) {
   const p = $('loginPill');
-  if (v.loginState === 'ok') { p.textContent = '已登录'; p.className = 'pill ok'; }
+  if (v.loginState === 'ok') { p.textContent = v.accountMid ? ('UID ' + v.accountMid) : '已登录'; p.className = 'pill ok'; }
   else if (v.loginState === 'no') { p.textContent = '未登录'; p.className = 'pill warn'; }
   else { p.textContent = '登录未知'; p.className = 'pill'; }
 }
@@ -20,7 +20,12 @@ function render(v) {
   const firstUse = !v.syncedOnce;
   $('welcomeBox').style.display = firstUse ? 'block' : 'none';
   $('mainBox').style.display = firstUse ? 'none' : 'block';
-  if (firstUse) return;
+  if (firstUse) {
+    $('welcomeText').innerHTML = v.firstSetupReason === 'accountChanged'
+      ? '检测到 B 站账号已切换。<br />旧账号收藏数据已清理，扩展设置已保留。<br />请进入哔哩哔哩重新选择收藏夹。'
+      : '欢迎使用！<br />同步收藏夹后，每次打开哔哩哔哩首页，<br />就能看到「历史上的今天」收藏提醒。';
+    return;
+  }
 
   pillLogin(v);
   $('effDate').textContent = v.dateKey + (v.simulated ? '（模拟）' : '');

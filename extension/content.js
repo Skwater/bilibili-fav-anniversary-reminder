@@ -281,13 +281,14 @@ function render(v) {
       return;
     }
     const mode = v.syncMode || 'manual';
+    const accountChanged = v.firstSetupReason === 'accountChanged';
     const folds = v.foldersDetailed || [];
     // 冷却中：显示剩余时间；两个按钮——「刷新」重算显示，「立即同步」跳过等待直接开跑
     if (v.cooldownSec > 0) {
       show(cooldownCardView(v));
       return;
     }
-    if (mode !== 'manual') {
+    if (mode !== 'manual' && !accountChanged) {
       // 自动模式：交给后台按“自动同步”开关处理
       show(stateCard('⏳', '首次同步收藏夹中', v.note || '将自动同步你的收藏夹…', []));
       return;
@@ -304,7 +305,7 @@ function render(v) {
          btn('重新选择收藏夹', () => { initUserStarted = false; requestHome(); })]));
       return;
     }
-    // 手动模式：弹出“自选同步内容”向导（区分 我创建的 / 追更的）
+    // 手动模式或账号刚切换：弹出“自选同步内容”向导。
     show(initWizardCard(v));
     return;
   }
@@ -449,13 +450,21 @@ function initWizardCard(v) {
   const card = el('div', 'dsh-card dsh-wizard');
   const head = el('div', 'dsh-head');
   const tt = el('div', 'dsh-titles');
-  tt.appendChild(el('div', 'dsh-title-main', '🚀 首次同步 · 选择要同步的收藏夹'));
+  const accountChanged = v.firstSetupReason === 'accountChanged';
+  tt.appendChild(el('div', 'dsh-title-main', accountChanged
+    ? '🔄 已切换账号 · 重新选择收藏夹'
+    : '🚀 首次同步 · 选择要同步的收藏夹'));
   head.appendChild(tt);
   const close = btn('×', closeState);
   close.className = 'dsh-close dsh-close-state';
   close.title = '收起';
   head.appendChild(close);
   card.appendChild(head);
+
+  if (accountChanged) {
+    card.appendChild(el('div', 'dsh-wizard-note',
+      '为避免不同账号的数据混用，旧账号的收藏数据和同步进度已清理；扩展设置已保留。'));
+  }
 
   const listWrap = el('div', 'dsh-wizard-list');
   const countBar = el('div', 'dsh-wizard-count', '');
