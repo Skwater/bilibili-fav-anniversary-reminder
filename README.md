@@ -10,7 +10,9 @@
 
 打开 `https://www.bilibili.com/` 时，插件按你收藏夹内**视频投稿的发布时间**与今天（月-日）做匹配——如果若干年前的今天你收藏过某些投稿，右下角会弹出一张"X 年前的今天"卡片，点击可回到视频。
 
-![哔哩朝花夕拾 · 首页浮层提醒](assets/screenshot-1.png)
+![哔哩朝花夕拾 · 今日回顾](assets/screenshot-1.png)
+
+![哔哩朝花夕拾 · 历史日历](assets/screenshot-2.png)
 
 > 非哔哩哔哩官方产品，与 B 站无任何关联；请遵守 B 站用户协议合理使用。
 > 本项目由 **DeepSeek（AI）与 OpenAI Codex 参与设计、实现与维护**，仅供学习交流参考。
@@ -57,7 +59,7 @@
 ```
 extension/          # 扩展本体（manifest / common / background / content / popup / options / icons）
 tools/              # 公共工具自检 selftest.js；同步状态机自检 background-selftest.js
-assets/             # 图标源图与宣传截图（logo.png、screenshot-1.png）
+assets/             # 图标源图与宣传截图（logo.png、screenshot-1.png、screenshot-2.png）
 需求梳理.md / 开发调试说明.md   # 设计与调试文档（本地，不入库）
 ```
 
