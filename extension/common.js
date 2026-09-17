@@ -18,7 +18,8 @@ const CFG = {
   DEFAULT_SETTINGS: {
     hideInvalid: true,   // 默认不提醒/不展示失效视频
     feb29: '0228',       // 2/29 平年归并：'0228' 或 '0301'
-    syncMode: 'manual',  // 自动同步：'manual'手动 / 'onHome'首页每次 / 'daily'每天一次
+    syncMode: 'manual',  // 自动同步：'manual'手动 / 'onHome'首页每次 / 'daily'每天一次 / 'custom'自定义天数
+    customSyncDays: 3,   // 自定义自动同步间隔（1~365 天）
     rateWaitMs: 15 * 60 * 1000,   // 412 风控冷却（默认 15 分钟，设置页可改）
     burstPauseMs: 5 * 60 * 1000,  // 单段配额暂停（默认 5 分钟，设置页可改）
     burstPages: 120,              // 每段连续请求页数配额（默认 120，设置页可改）
@@ -118,6 +119,12 @@ function effectiveDateFor(settings) {
   return (s.debugDate && isValidDateKey(s.debugDate)) ? keyToDate(s.debugDate) : new Date();
 }
 function effectiveKeyFor(settings) { return dateKeyFromDate(effectiveDateFor(settings)); }
+
+function customSyncDaysFor(settings) {
+  const raw = Number(settings && settings.customSyncDays);
+  if (!Number.isFinite(raw)) return CFG.DEFAULT_SETTINGS.customSyncDays;
+  return Math.min(365, Math.max(1, Math.round(raw)));
+}
 
 /* ---------------- 文案 ---------------- */
 function fmtDateCN(dateOrTs) {

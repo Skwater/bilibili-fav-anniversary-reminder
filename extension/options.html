@@ -85,6 +85,9 @@
       <label><input type="radio" name="syncMode" value="manual" /> 手动（仅点同步按钮）</label>
       <label><input type="radio" name="syncMode" value="onHome" /> 首页每次</label>
       <label><input type="radio" name="syncMode" value="daily" /> 每天一次</label>
+      <label><input type="radio" name="syncMode" value="custom" /> 自定义：每
+        <input type="number" id="customSyncDays" class="num3" min="1" max="365" step="1" value="3" aria-label="自定义同步间隔天数" /> 天一次
+      </label>
     </div>
     <div class="row">
       <span>本次同步范围：</span>

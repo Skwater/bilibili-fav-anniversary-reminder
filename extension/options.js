@@ -167,6 +167,7 @@ async function refreshAll() {
   if (rb) rb.checked = true;
   const sm = document.querySelector(`input[name=syncMode][value="${settings.syncMode || 'manual'}"]`);
   if (sm) sm.checked = true;
+  if (document.activeElement !== $('customSyncDays')) $('customSyncDays').value = String(customSyncDaysFor(settings));
   const ss = document.querySelector(`input[name=syncScope][value="${syncScope}"]`);
   if (ss) ss.checked = true;
   if (!timeFocused('riskWait')) fillTime('riskWaitH', 'riskWaitM', 'riskWaitS', settings.rateWaitMs);
@@ -239,6 +240,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.querySelectorAll('input[name=syncMode]').forEach(rb => {
     rb.addEventListener('change', () => { if (rb.checked) saveSettingsPatch({ syncMode: rb.value }); });
+  });
+  $('customSyncDays').addEventListener('input', e => {
+    const days = parseInt(e.target.value || '0', 10);
+    if (!Number.isFinite(days) || days < 1 || days > 365) return;
+    const custom = document.querySelector('input[name=syncMode][value="custom"]');
+    custom.checked = true;
+    saveSettingsPatch({ syncMode: 'custom', customSyncDays: days });
   });
   document.querySelectorAll('input[name=syncScope]').forEach(rb => {
     rb.addEventListener('change', () => { if (rb.checked) syncScope = rb.value; });

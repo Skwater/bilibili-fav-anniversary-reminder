@@ -291,6 +291,12 @@ async function finishPendingAccountSwitch() {
 /* 参与同步/匹配的收藏夹：仅看用户开关；不可读的夹仍每轮重试（成功即恢复） */
 function enabledFolders() { return mem.folders.filter(f => f.enabled !== false); }
 
+function customSyncDue(nowMs) {
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const lastSyncMs = (Number(mem.meta.lastSyncAt) || 0) * 1000;
+  return !lastSyncMs || (now - lastSyncMs) >= customSyncDaysFor(mem.settings) * 24 * 60 * 60 * 1000;
+}
+
 /* ---------------- 请求代理（在页面主世界执行 fetch） ----------------
  * 注意：不能直接在 content script 隔离世界里 fetch —— Chrome 对隔离世界的
  * 跨源凭据请求与页面主世界行为不同（主世界 = 你在控制台手动验证 CORS 的环境）。
@@ -1490,6 +1496,7 @@ async function buildView() {
       : (refreshBusy ? '同步中…' : ''),
     note: flowNote || '',
     syncMode: mem.settings.syncMode || 'manual',
+    customSyncDays: customSyncDaysFor(mem.settings),
     accountMid: mem.meta.mid || 0,
     firstSetupReason: mem.meta.firstSetupReason || '',
     cooldownSec: Math.ceil(coolingMs() / 1000) || 0,
@@ -1615,6 +1622,9 @@ async function handle(msg, sender) {
           mem.pendingDailyRun = true;
           shouldRun = true;
         }
+      } else if (mode === 'custom' && customSyncDue()) {
+        mem.pendingDailyRun = true;
+        shouldRun = true;
       } else if (!mem.meta.syncedOnce && mem.syncCursor) {
         // 首次全量进行中被打断（含非 412）：回首页自动续传（修复“停中途需手点”的链路断点）
         shouldRun = true;

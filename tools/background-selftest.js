@@ -62,7 +62,7 @@ const expose = `
 globalThis.__bgtest = {
   CFG, mem, loginInfo,
   refreshLogin, ensureFolderList, syncOneFolder, runSyncPass, runRefresh, handle, buildView,
-  fingerprintIds, folderAidSet, resetForAccountSwitch, hitsForDateKey, computeCalendarYear,
+  fingerprintIds, folderAidSet, resetForAccountSwitch, hitsForDateKey, computeCalendarYear, customSyncDue,
   setBurstLimit(value) { burstLimit = value; },
   clearRate() { rateUntil = 0; pauseReason = ''; delete mem.meta.resumeAt; delete mem.meta.resumeReason; },
   reset() {
@@ -232,6 +232,17 @@ function media(id, title) {
     const view = await api.buildView();
     assert(view.folders.enabledItems === 2, '启用条目没有按唯一视频和启用夹关系统计');
     assert(view.folders.items === 3, '全部缓存条目统计错误');
+  });
+
+  await test('自定义天数按最近成功同步时间判断是否到期', async () => {
+    const now = new Date(2026, 8, 17, 12).getTime();
+    api.mem.settings.customSyncDays = 3;
+    api.mem.meta.lastSyncAt = (now - 2 * 24 * 60 * 60 * 1000) / 1000;
+    assert(api.customSyncDue(now) === false, '未满自定义间隔却提前同步');
+    api.mem.meta.lastSyncAt = (now - 3 * 24 * 60 * 60 * 1000) / 1000;
+    assert(api.customSyncDue(now) === true, '达到自定义间隔后没有同步');
+    delete api.mem.meta.lastSyncAt;
+    assert(api.customSyncDue(now) === true, '从未同步时没有触发自定义同步');
   });
 
   await test('追更列表第 2 页失败时拒绝提交残缺列表', async () => {

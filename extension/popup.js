@@ -2,7 +2,12 @@
 /* 哔哩朝花夕拾 - popup */
 const $ = id => document.getElementById(id);
 
-const MODE_LABEL = { manual: '手动', onHome: '首页每次', daily: '每天一次' };
+function syncModeLabel(v) {
+  if (v.syncMode === 'onHome') return '每次首页同步';
+  if (v.syncMode === 'daily') return '每天同步';
+  if (v.syncMode === 'custom') return `每 ${v.customSyncDays || 3} 天同步`;
+  return '手动同步';
+}
 
 let view = null;
 let activeView = 'today';
@@ -91,10 +96,11 @@ function render(v) {
   }
 
   // 概览
-  $('folderInfo').textContent = `${v.folders.enabled}/${v.folders.total} 夹 · ${v.folders.items} 条` +
-    ` · 同步模式：${MODE_LABEL[v.syncMode] || '手动'}`;
+  $('folderInfo').textContent = `${v.folders.enabled} 夹 · ${v.folders.items} 条 · ${syncModeLabel(v)}`;
+  $('syncLabel').textContent = v.syncing ? '同步：' : '最近同步：';
   $('syncInfo').textContent = v.syncing ? '同步中' : (v.lastSyncAt ? fmtDateTime(v.lastSyncAt) : '从未');
   $('btnCancelSync').style.display = v.syncing ? 'inline-block' : 'none';
+  $('syncActions').style.display = v.syncing ? 'block' : 'none';
   const note = $('syncNote');
   if (v.syncing && v.syncLabel) { note.style.display = 'block'; note.textContent = v.syncLabel; }
   else note.style.display = 'none';
@@ -264,19 +270,6 @@ document.addEventListener('DOMContentLoaded', () => {
   $('btnSync').addEventListener('click', () => syncNow(false));
   $('btnFull').addEventListener('click', () => syncNow(true));
   $('btnOptions').addEventListener('click', () => chrome.runtime.openOptionsPage());
-  $('btnRefreshFolders').addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: MSG.REFRESH_FOLDERS }, r => {
-      if (r && r.cooldown) {
-        const n = $('syncNote');
-        n.style.display = 'block';
-        n.textContent = cooldownText(r.seconds, r.reason);
-      } else if (r && r.busy) {
-        const n = $('syncNote');
-        n.style.display = 'block';
-        n.textContent = '已有同步正在进行中。';
-      }
-    });
-  });
   $('btnCancelSync').addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: MSG.CANCEL_SYNC });
   });

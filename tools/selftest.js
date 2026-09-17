@@ -7,7 +7,7 @@ const code = fs.readFileSync(path.join(__dirname, '..', 'extension', 'common.js'
 const f = new Function(code + `
   return {
     pad2, dateKeyFromDate, keyToDate, isValidDateKey, mmddFromTs, yearFromTs,
-    isLeapYear, feb29FallbackKey, effectiveDateFor, effectiveKeyFor, todayKey,
+    isLeapYear, feb29FallbackKey, effectiveDateFor, effectiveKeyFor, customSyncDaysFor, todayKey,
     fmtMmddCn, fmtDateCN, fmtDateTime, escapeHtml, CFG, MSG
   };
 `)();
@@ -37,6 +37,9 @@ eq(f.CFG.PAGE_SIZE, '20', 'CFG 常量存在');
 eq(f.MSG.HOME_OPEN, 'HOME_OPEN', 'MSG 常量存在');
 eq(f.MSG.GET_CALENDAR_YEAR, 'GET_CALENDAR_YEAR', '日历年度消息常量存在');
 eq(f.MSG.GET_DATE_HITS, 'GET_DATE_HITS', '日历日期消息常量存在');
+eq(f.customSyncDaysFor({ customSyncDays: 7 }), '7', '自定义同步天数');
+eq(f.customSyncDaysFor({ customSyncDays: 0 }), '1', '自定义同步天数下限');
+eq(f.customSyncDaysFor({ customSyncDays: 999 }), '365', '自定义同步天数上限');
 
 console.log(failed === 0 ? '\n全部通过 ✓' : ('\n失败 ' + failed + ' 项 ✗'));
 process.exit(failed === 0 ? 0 : 1);
