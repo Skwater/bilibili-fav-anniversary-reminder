@@ -6,6 +6,7 @@ Add-Type -AssemblyName System.Drawing
 
 $assets = [IO.Path]::GetFullPath($AssetsDir)
 $backgroundPath = Join-Path $assets 'promo-background.png'
+$logoPath = Join-Path $assets 'logo.png'
 
 function New-RoundedPath([float]$x, [float]$y, [float]$w, [float]$h, [float]$r) {
   $path = [Drawing.Drawing2D.GraphicsPath]::new()
@@ -43,6 +44,7 @@ function New-Promo([string]$sourceName, [string]$outputName, [string]$headline, 
   $canvas.SetResolution(96, 96)
   $graphics = [Drawing.Graphics]::FromImage($canvas)
   $background = [Drawing.Image]::FromFile($backgroundPath)
+  $logo = [Drawing.Image]::FromFile($logoPath)
   $source = [Drawing.Image]::FromFile($sourcePath)
   try {
     $graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
@@ -61,7 +63,6 @@ function New-Promo([string]$sourceName, [string]$outputName, [string]$headline, 
     $veil.Dispose()
 
     # Left-side marketing copy.
-    $accent = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255, 0, 161, 214))
     $dark = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255, 24, 25, 28))
     $muted = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255, 80, 91, 103))
     $brandFont = [Drawing.Font]::new('Microsoft YaHei UI', 24, [Drawing.FontStyle]::Bold, [Drawing.GraphicsUnit]::Pixel)
@@ -69,11 +70,15 @@ function New-Promo([string]$sourceName, [string]$outputName, [string]$headline, 
     $subtitleFont = [Drawing.Font]::new('Microsoft YaHei UI', 22, [Drawing.FontStyle]::Regular, [Drawing.GraphicsUnit]::Pixel)
     $footFont = [Drawing.Font]::new('Microsoft YaHei UI', 16, [Drawing.FontStyle]::Regular, [Drawing.GraphicsUnit]::Pixel)
     try {
-      $graphics.FillEllipse($accent, 72, 69, 42, 42)
-      $markFont = [Drawing.Font]::new('Microsoft YaHei UI', 23, [Drawing.FontStyle]::Bold, [Drawing.GraphicsUnit]::Pixel)
-      $markBrush = [Drawing.SolidBrush]::new([Drawing.Color]::White)
-      try { $graphics.DrawString('拾', $markFont, $markBrush, 78, 74) } finally { $markBrush.Dispose(); $markFont.Dispose() }
-      $graphics.DrawString('哔哩朝花夕拾', $brandFont, $dark, 128, 74)
+      # The 56px mark is large enough to retain the project logo's details while
+      # staying subordinate to the adjacent 24px brand name.
+      $graphics.DrawImage(
+        $logo,
+        [Drawing.Rectangle]::new(72, 62, 56, 56),
+        0, 0, $logo.Width, $logo.Height,
+        [Drawing.GraphicsUnit]::Pixel
+      )
+      $graphics.DrawString('哔哩朝花夕拾', $brandFont, $dark, 142, 74)
       $graphics.DrawString($headline, $headlineFont, $dark, [Drawing.RectangleF]::new(72, 187, 600, 145))
       $graphics.DrawString($subtitle, $subtitleFont, $muted, [Drawing.RectangleF]::new(76, 350, 560, 78))
 
@@ -83,10 +88,10 @@ function New-Promo([string]$sourceName, [string]$outputName, [string]$headline, 
         Draw-Pill $graphics $pill $x 464 $w
         $x += $w + 14
       }
-      $graphics.DrawString('Chrome 扩展  ·  数据仅存本机', $footFont, $muted, 76, 706)
+      $graphics.DrawString('Chrome 扩展  ·  GPL-3.0 开源', $footFont, $muted, 76, 706)
     } finally {
       $footFont.Dispose(); $subtitleFont.Dispose(); $headlineFont.Dispose(); $brandFont.Dispose()
-      $muted.Dispose(); $dark.Dispose(); $accent.Dispose()
+      $muted.Dispose(); $dark.Dispose()
     }
 
     # Preserve the original screenshot at 1:1 pixels inside a clean product card.
@@ -113,13 +118,31 @@ function New-Promo([string]$sourceName, [string]$outputName, [string]$headline, 
         0, 0, $source.Width, $source.Height,
         [Drawing.GraphicsUnit]::Pixel
       )
+
+      # Mask the middle digits of the account UID without changing the source
+      # screenshot. Coordinates are relative to the fixed 500px PixPin capture.
+      $uidX = $shotX + 350
+      $uidY = $shotY + 12
+      $uidPath = New-RoundedPath $uidX $uidY 136 28 14
+      $uidFill = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255, 232, 247, 252))
+      $uidTextBrush = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255, 0, 161, 214))
+      $uidFont = [Drawing.Font]::new('Microsoft YaHei UI', 14, [Drawing.FontStyle]::Regular, [Drawing.GraphicsUnit]::Pixel)
+      $uidFormat = [Drawing.StringFormat]::new()
+      $uidFormat.Alignment = [Drawing.StringAlignment]::Center
+      $uidFormat.LineAlignment = [Drawing.StringAlignment]::Center
+      try {
+        $graphics.FillPath($uidFill, $uidPath)
+        $graphics.DrawString('UID 128***862', $uidFont, $uidTextBrush, [Drawing.RectangleF]::new($uidX, $uidY, 136, 28), $uidFormat)
+      } finally {
+        $uidFormat.Dispose(); $uidFont.Dispose(); $uidTextBrush.Dispose(); $uidFill.Dispose(); $uidPath.Dispose()
+      }
     } finally {
       $border.Dispose(); $white.Dispose(); $shadow.Dispose(); $cardPath.Dispose(); $shadowPath.Dispose()
     }
 
     $canvas.Save($outputPath, [Drawing.Imaging.ImageFormat]::Png)
   } finally {
-    $source.Dispose(); $background.Dispose(); $graphics.Dispose(); $canvas.Dispose()
+    $source.Dispose(); $logo.Dispose(); $background.Dispose(); $graphics.Dispose(); $canvas.Dispose()
   }
   Write-Output $outputPath
 }
