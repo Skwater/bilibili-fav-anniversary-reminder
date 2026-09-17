@@ -1,4 +1,8 @@
-# 哔哩朝花夕拾
+<p align="center">
+  <img src="assets/logo.png" width="160" alt="哔哩朝花夕拾 Logo" />
+</p>
+
+<h1 align="center">哔哩朝花夕拾</h1>
 
 > Chrome 扩展（Manifest V3）· 在哔哩哔哩首页提醒你收藏夹里“历史上的今天”发布的投稿。
 
