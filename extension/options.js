@@ -6,7 +6,7 @@ let settings = null;
 let view = null;
 let syncScope = 'all';   // 本次同步范围：全部 / 仅自建 / 仅追更
 let debugEditorOpen = false;
-const collapsedGroups = new Set();   // 记录被折叠的分组（'created' / 'collected'），重绘时保持折叠
+const collapsedGroups = new Set(['created', 'collected']); // 两组默认折叠；用户展开后重绘保持当前状态
 
 function getView() {
   return new Promise(resolve => {
@@ -77,7 +77,7 @@ async function renderFolders() {
     list.appendChild(d);
     return;
   }
-  // 按来源分组：我创建的 / 追更的（收藏的）——组头可点击折叠，默认展开；重绘保持折叠状态
+  // 按来源分组：我创建的 / 追更的（收藏的）——组头可点击展开，默认折叠；重绘保持当前状态
   const addGroup = (title, key, items) => {
     if (!items.length) return;
     const h = document.createElement('div');
