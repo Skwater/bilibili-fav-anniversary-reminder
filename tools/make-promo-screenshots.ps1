@@ -105,7 +105,14 @@ function New-Promo([string]$sourceName, [string]$outputName, [string]$headline, 
       $graphics.FillPath($shadow, $shadowPath)
       $graphics.FillPath($white, $cardPath)
       $graphics.DrawPath($border, $cardPath)
-      $graphics.DrawImageUnscaled($source, [int]$shotX, [int]$shotY)
+      # PixPin exports at 120 DPI. Draw into an explicit pixel-sized rectangle so
+      # System.Drawing does not shrink it to 96/120 (80%) and leave empty space.
+      $graphics.DrawImage(
+        $source,
+        [Drawing.Rectangle]::new([int]$shotX, [int]$shotY, $source.Width, $source.Height),
+        0, 0, $source.Width, $source.Height,
+        [Drawing.GraphicsUnit]::Pixel
+      )
     } finally {
       $border.Dispose(); $white.Dispose(); $shadow.Dispose(); $cardPath.Dispose(); $shadowPath.Dispose()
     }
