@@ -13,6 +13,7 @@ let calendarSelected = todayKey();
 let calendarSummary = null;
 let calendarRequestSeq = 0;
 let calendarDirty = false;
+let calendarCollapsed = false;
 
 function pillLogin(v) {
   const p = $('loginPill');
@@ -157,6 +158,11 @@ function loadCalendarDate(dateKey) {
 
 function renderCalendar() {
   if (!calendarSummary) return;
+  const panel = $('calendarPanel');
+  panel.classList.toggle('calendar-collapsed', calendarCollapsed);
+  const collapseButton = $('calendarCollapse');
+  collapseButton.textContent = calendarCollapsed ? '展开日历 ↓' : '收起日历 ↑';
+  collapseButton.setAttribute('aria-expanded', String(!calendarCollapsed));
   $('calendarTitle').textContent = `${calendarYear} 年 ${calendarMonth + 1} 月`;
   const days = $('calendarDays');
   days.innerHTML = '';
@@ -164,7 +170,16 @@ function renderCalendar() {
   const offset = (first.getDay() + 6) % 7;
   const start = new Date(calendarYear, calendarMonth, 1 - offset);
   const realKey = todayKey();
-  for (let i = 0; i < 42; i++) {
+  let firstCell = 0;
+  let lastCell = 42;
+  if (calendarCollapsed) {
+    const selectedParts = calendarSelected.split('-').map(Number);
+    const selectedDate = new Date(selectedParts[0], selectedParts[1] - 1, selectedParts[2]);
+    const selectedOffset = Math.round((selectedDate - start) / 86400000);
+    firstCell = Math.max(0, Math.min(35, Math.floor(selectedOffset / 7) * 7));
+    lastCell = firstCell + 7;
+  }
+  for (let i = firstCell; i < lastCell; i++) {
     const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
     const key = localDateKey(d.getFullYear(), d.getMonth(), d.getDate());
     const count = calendarSummary.days[key] || 0;
@@ -229,6 +244,10 @@ document.addEventListener('DOMContentLoaded', () => {
   $('calendarNextMonth').addEventListener('click', () => moveCalendarMonth(1));
   $('calendarPrevYear').addEventListener('click', () => moveCalendarYear(-1));
   $('calendarNextYear').addEventListener('click', () => moveCalendarYear(1));
+  $('calendarCollapse').addEventListener('click', () => {
+    calendarCollapsed = !calendarCollapsed;
+    renderCalendar();
+  });
   $('calendarToday').addEventListener('click', () => {
     const now = new Date();
     calendarMonth = now.getMonth();
