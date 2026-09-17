@@ -188,17 +188,6 @@ function debugPanel(v) {
   row1.appendChild(btn('重弹', () => safeSend({ type: MSG.DEBUG_FORCE })));
   box.appendChild(row1);
 
-  if (v.avail && v.avail.length) {
-    const row2 = el('div', 'dsh-debug-chips');
-    row2.appendChild(el('span', 'dsh-debug-label', '收藏中的日期：'));
-    for (const a of v.avail.slice(0, 12)) {
-      const c = el('button', 'dsh-chip', `${a.label}·${a.count}条`);
-      c.title = '设为模拟日期 ' + a.key;
-      c.addEventListener('click', () => safeSend({ type: MSG.SET_DEBUG_DATE, date: a.key }));
-      row2.appendChild(c);
-    }
-    box.appendChild(row2);
-  }
   return box;
 }
 

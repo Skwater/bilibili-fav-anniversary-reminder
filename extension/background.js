@@ -1323,18 +1323,13 @@ async function runRefresh(verifiedMid) {
   }
 }
 
-/* ---------------- 匹配（历史上的今天） ---------------- */
-function computeHits() {
+/* ---------------- 匹配（历史上的今天 / 历史日历） ---------------- */
+function buildMatchData() {
   const s = mem.settings;
-  const effDate = effectiveDateFor(s);
-  const effKey = dateKeyFromDate(effDate);
-  const effYear = effDate.getFullYear();
-  const effMM = pad2(effDate.getMonth() + 1) + '-' + pad2(effDate.getDate());
-  const fb = feb29FallbackKey(s);
   const enabledIds = new Set(enabledFolders().map(f => f.mediaId));
   const folderTitle = new Map(mem.folders.map(f => [f.mediaId, f.title]));
 
-  // 第一遍：筛选“可参与”条目，同时统计所有出现过的 MM-DD（供调试快捷日期）
+  // 统一筛选可参与条目：首页提醒、Popup 今日与历史日历必须使用同一口径。
   const pool = [];                       // {it, mm, pubYear}
   const datePool = new Map();            // mm -> {minY, maxY, count}
   for (const k of Object.keys(mem.items)) {
@@ -1353,10 +1348,19 @@ function computeHits() {
     rec.count++;
     datePool.set(m, rec);
   }
+  return { pool, datePool, enabledIds, folderTitle };
+}
 
-  // 第二遍：按生效日期过滤出命中
+function hitsForDateKey(dateKey, matchData) {
+  if (!isValidDateKey(dateKey)) return [];
+  const data = matchData || buildMatchData();
+  const effDate = keyToDate(dateKey);
+  const effYear = effDate.getFullYear();
+  const effMM = pad2(effDate.getMonth() + 1) + '-' + pad2(effDate.getDate());
+  const fb = feb29FallbackKey(mem.settings);
+
   const hits = [];
-  for (const p of pool) {
+  for (const p of data.pool) {
     const { it, m, pubYear } = p;
     if (pubYear >= effYear) continue;             // 同年同日不算“历史”
     if (m === '02-29' && !isLeapYear(effYear)) {
@@ -1364,22 +1368,54 @@ function computeHits() {
     } else if (m !== effMM) {
       continue;
     }
-    const fid = it.folderIds.filter(id => enabledIds.has(id));
+    const fid = it.folderIds.filter(id => data.enabledIds.has(id));
     hits.push({
       bvid: it.bvid || ('av' + it.aid),
       aid: it.aid, title: it.title, cover: it.cover,
       upperName: it.upperName, pubtime: it.pubtime,
       pubYear, years: effYear - pubYear,
       favTime: it.favTime, attr: it.attr,
-      folderName: fid.length ? (folderTitle.get(fid[0]) || '') : ''
+      folderName: fid.length ? (data.folderTitle.get(fid[0]) || '') : ''
     });
   }
   hits.sort((a, b) => a.pubtime - b.pubtime);
+  return hits;
+}
+
+function computeCalendarYear(year) {
+  const currentYear = new Date().getFullYear();
+  const data = buildMatchData();
+  const days = {};
+  const fb = feb29FallbackKey(mem.settings);
+  const earliestPublishYear = data.pool.reduce((min, p) => Math.min(min, p.pubYear), currentYear);
+  const minYear = Math.min(currentYear, earliestPublishYear + 1);
+  const wantedYear = Math.max(minYear, Math.min(currentYear, parseInt(year, 10) || currentYear));
+  for (const p of data.pool) {
+    if (p.pubYear >= wantedYear) continue;
+    const mm = (p.m === '02-29' && !isLeapYear(wantedYear)) ? fb : p.m;
+    const key = wantedYear + '-' + mm;
+    days[key] = (days[key] || 0) + 1;
+  }
+  return {
+    year: wantedYear,
+    minYear,
+    maxYear: currentYear,
+    days
+  };
+}
+
+function computeHits() {
+  const s = mem.settings;
+  const effDate = effectiveDateFor(s);
+  const effKey = dateKeyFromDate(effDate);
+  const effYear = effDate.getFullYear();
+  const data = buildMatchData();
+  const hits = hitsForDateKey(effKey, data);
 
   // 调试用“建议日期”：真实今天的年份若早于该组最晚发布年，则取 最晚年+1，保证能命中
   const realYear = new Date().getFullYear();
   const avail = [];
-  for (const [mm, rec] of datePool.entries()) {
+  for (const [mm, rec] of data.datePool.entries()) {
     let y = Math.max(realYear, rec.maxY + 1);
     if (mm === '02-29' && !isLeapYear(y)) { while (!isLeapYear(y)) y++; }
     avail.push({ key: y + '-' + mm, count: rec.count, label: fmtMmddCn(mm) });
@@ -1586,6 +1622,14 @@ async function handle(msg, sender) {
 
     case MSG.GET_VIEW:
       return buildView();
+
+    case MSG.GET_CALENDAR_YEAR:
+      return computeCalendarYear(msg.year);
+
+    case MSG.GET_DATE_HITS: {
+      const date = isValidDateKey(msg.date) ? msg.date : todayKey();
+      return { dateKey: date, hits: hitsForDateKey(date) };
+    }
 
     case MSG.CHECK_LOGIN: {
       // 手动重试登录检查：跳过 TTL 立即复查（“无法连接”卡上的“重试”按钮）

@@ -223,14 +223,3 @@
   font-size: 12px !important;
   background: #fff !important;
 }
-.dsh-debug-chips { display: flex !important; flex-wrap: wrap !important; gap: 6px !important; margin-top: 8px !important; }
-.dsh-chip {
-  border: 1px solid #d0d3d8 !important;
-  background: #fff !important;
-  border-radius: 12px !important;
-  padding: 3px 10px !important;
-  font-size: 12px !important;
-  color: #00a1d6 !important;
-  cursor: pointer !important;
-}
-.dsh-chip:hover { background: #e8f6fb !important; }

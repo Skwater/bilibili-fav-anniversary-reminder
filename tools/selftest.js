@@ -35,6 +35,8 @@ eq(f.fmtDateCN(new Date(2023, 1, 9)), '2023 年 2 月 9 日', 'fmtDateCN');
 eq(f.escapeHtml('<a b="c">&\'x'), '&lt;a b=&quot;c&quot;&gt;&amp;&#39;x', 'escapeHtml');
 eq(f.CFG.PAGE_SIZE, '20', 'CFG 常量存在');
 eq(f.MSG.HOME_OPEN, 'HOME_OPEN', 'MSG 常量存在');
+eq(f.MSG.GET_CALENDAR_YEAR, 'GET_CALENDAR_YEAR', '日历年度消息常量存在');
+eq(f.MSG.GET_DATE_HITS, 'GET_DATE_HITS', '日历日期消息常量存在');
 
 console.log(failed === 0 ? '\n全部通过 ✓' : ('\n失败 ' + failed + ' 项 ✗'));
 process.exit(failed === 0 ? 0 : 1);

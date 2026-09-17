@@ -62,7 +62,7 @@ const expose = `
 globalThis.__bgtest = {
   CFG, mem, loginInfo,
   refreshLogin, ensureFolderList, syncOneFolder, runSyncPass, runRefresh, handle,
-  fingerprintIds, folderAidSet, resetForAccountSwitch,
+  fingerprintIds, folderAidSet, resetForAccountSwitch, hitsForDateKey, computeCalendarYear,
   setBurstLimit(value) { burstLimit = value; },
   clearRate() { rateUntil = 0; pauseReason = ''; delete mem.meta.resumeAt; delete mem.meta.resumeReason; },
   reset() {
@@ -183,6 +183,39 @@ function media(id, title) {
     const result = await api.refreshLogin(true);
     assert(result && !result.accountChanged, '同账号被误判为换号');
     assert(api.mem.meta.syncedOnce && api.mem.folders.length === 1 && api.mem.items.BV1, '同账号数据被误清理');
+  });
+
+  await test('历史日历与今日提醒复用相同筛选口径', async () => {
+    api.mem.folders = [
+      { mediaId: 1, title: '启用夹', enabled: true },
+      { mediaId: 2, title: '关闭夹', enabled: false }
+    ];
+    api.mem.items = {
+      BV1: { aid: 1, bvid: 'BV1', type: 2, title: '正常', pubtime: new Date(2020, 8, 17, 12).getTime() / 1000, attr: 0, folderIds: [1] },
+      BV2: { aid: 2, bvid: 'BV2', type: 2, title: '失效', pubtime: new Date(2019, 8, 17, 12).getTime() / 1000, attr: 1, folderIds: [1] },
+      BV3: { aid: 3, bvid: 'BV3', type: 2, title: '关闭夹', pubtime: new Date(2018, 8, 17, 12).getTime() / 1000, attr: 0, folderIds: [2] },
+      BV4: { aid: 4, bvid: 'BV4', type: 2, title: '同年', pubtime: new Date(2026, 8, 17, 12).getTime() / 1000, attr: 0, folderIds: [1] }
+    };
+    api.mem.settings.hideInvalid = true;
+    const calendar = api.computeCalendarYear(2026);
+    const hits = api.hitsForDateKey('2026-09-17');
+    assert(calendar.days['2026-09-17'] === 1, '日历数量未按启用夹/失效/年份口径过滤');
+    assert(hits.length === 1 && hits[0].title === '正常', '日期详情与日历数量不一致');
+    assert(api.computeCalendarYear(1999).year === 2021, '早于可浏览范围的年份未自动校正');
+  });
+
+  await test('历史日历按设置归并平年二月二十九日', async () => {
+    api.mem.folders = [{ mediaId: 1, title: '夹', enabled: true }];
+    api.mem.items = {
+      BV1: { aid: 1, bvid: 'BV1', type: 2, title: '闰日', pubtime: new Date(2020, 1, 29, 12).getTime() / 1000, attr: 0, folderIds: [1] },
+      BV2: { aid: 2, bvid: 'BV2', type: 2, title: '二八', pubtime: new Date(2021, 1, 28, 12).getTime() / 1000, attr: 0, folderIds: [1] }
+    };
+    api.mem.settings.feb29 = '0228';
+    const flat = api.computeCalendarYear(2026);
+    assert(flat.days['2026-02-28'] === 2 && !flat.days['2026-02-29'], '平年归并数量错误');
+    assert(api.hitsForDateKey('2026-02-28').length === 2, '平年日期详情未包含闰日投稿');
+    const leap = api.computeCalendarYear(2024);
+    assert(leap.days['2024-02-28'] === 1 && leap.days['2024-02-29'] === 1, '闰年没有拆分 2/28 与 2/29');
   });
 
   await test('追更列表第 2 页失败时拒绝提交残缺列表', async () => {

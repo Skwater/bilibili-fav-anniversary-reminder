@@ -5,12 +5,49 @@ const $ = id => document.getElementById(id);
 const MODE_LABEL = { manual: '手动', onHome: '首页每次', daily: '每天一次' };
 
 let view = null;
+let activeView = 'today';
+const realToday = new Date();
+let calendarYear = realToday.getFullYear();
+let calendarMonth = realToday.getMonth();
+let calendarSelected = todayKey();
+let calendarSummary = null;
+let calendarRequestSeq = 0;
+let calendarDirty = false;
 
 function pillLogin(v) {
   const p = $('loginPill');
   if (v.loginState === 'ok') { p.textContent = v.accountMid ? ('UID ' + v.accountMid) : '已登录'; p.className = 'pill ok'; }
   else if (v.loginState === 'no') { p.textContent = '未登录'; p.className = 'pill warn'; }
   else { p.textContent = '登录未知'; p.className = 'pill'; }
+}
+
+function appendHit(wrap, h) {
+  const it = document.createElement('div'); it.className = 'item';
+  const img = document.createElement('img');
+  if (h.cover) { img.src = h.cover; img.referrerPolicy = 'no-referrer'; img.loading = 'lazy'; }
+  img.addEventListener('error', () => { img.style.visibility = 'hidden'; });
+  it.appendChild(img);
+  const m = document.createElement('div'); m.className = 'm';
+  const t = document.createElement('div'); t.className = 't'; t.textContent = h.title; m.appendChild(t);
+  const s = document.createElement('div'); s.className = 's';
+  s.textContent = (h.upperName ? h.upperName + ' · ' : '') + h.years + ' 年前（' + h.pubYear + ' 年发布）';
+  m.appendChild(s);
+  const s2 = document.createElement('div'); s2.className = 's2';
+  s2.textContent = '来源：' + (h.folderName || '未命名');
+  m.appendChild(s2);
+  it.appendChild(m);
+  it.addEventListener('click', () => chrome.tabs.create({ url: 'https://www.bilibili.com/video/' + encodeURIComponent(h.bvid) }));
+  wrap.appendChild(it);
+}
+
+function renderHitList(wrap, hits, emptyText) {
+  wrap.innerHTML = '';
+  if (!hits.length) {
+    const e = document.createElement('div'); e.className = 'empty'; e.textContent = emptyText;
+    wrap.appendChild(e);
+    return;
+  }
+  for (const h of hits) appendHit(wrap, h);
 }
 
 function render(v) {
@@ -32,42 +69,24 @@ function render(v) {
 
   // 调试提示
   const hint = $('debugHint');
+  hint.innerHTML = '';
   if (v.simulated) {
-    hint.style.display = 'block';
-    hint.textContent = `模拟日期生效中（真实今天 ${todayKey()}），首页浮层将按模拟日期计算。`;
+    hint.style.display = 'flex';
+    const text = document.createElement('span');
+    text.textContent = `模拟首页日期 ${v.dateKey} 生效中（真实今天 ${todayKey()}）`;
+    const restore = document.createElement('button');
+    restore.type = 'button'; restore.textContent = '恢复真实今天';
+    restore.addEventListener('click', () => sendDebugDate(''));
+    hint.append(text, restore);
   } else hint.style.display = 'none';
 
   // 命中列表
   const wrap = $('items');
-  wrap.innerHTML = '';
   const hits = v.hits || [];
   if (v.loginState === 'no') {
-    const e = document.createElement('div'); e.className = 'empty';
-    e.textContent = '未登录哔哩哔哩，无法读取收藏夹。';
-    wrap.appendChild(e);
-  } else if (!hits.length) {
-    const e = document.createElement('div'); e.className = 'empty';
-    e.textContent = v.simulated ? '该模拟日期下没有命中' : '今天没有“历史上的今天”投稿';
-    wrap.appendChild(e);
+    renderHitList(wrap, [], '未登录哔哩哔哩，无法读取收藏夹。');
   } else {
-    for (const h of hits) {
-      const it = document.createElement('div'); it.className = 'item';
-      const img = document.createElement('img');
-      if (h.cover) { img.src = h.cover; img.referrerPolicy = 'no-referrer'; img.loading = 'lazy'; }
-      img.addEventListener('error', () => { img.style.visibility = 'hidden'; });
-      it.appendChild(img);
-      const m = document.createElement('div'); m.className = 'm';
-      const t = document.createElement('div'); t.className = 't'; t.textContent = h.title; m.appendChild(t);
-      const s = document.createElement('div'); s.className = 's';
-      s.textContent = (h.upperName ? h.upperName + ' · ' : '') + h.years + ' 年前的今天（' + h.pubYear + ' 年发布）';
-      m.appendChild(s);
-      const s2 = document.createElement('div'); s2.className = 's2';
-      s2.textContent = '来源：' + (h.folderName || '未命名');
-      m.appendChild(s2);
-      it.appendChild(m);
-      it.addEventListener('click', () => chrome.tabs.create({ url: 'https://www.bilibili.com/video/' + encodeURIComponent(h.bvid) }));
-      wrap.appendChild(it);
-    }
+    renderHitList(wrap, hits, v.simulated ? '该模拟日期下没有命中' : '今天没有“历史上的今天”投稿');
   }
 
   // 概览
@@ -79,37 +98,6 @@ function render(v) {
   if (v.syncing && v.syncLabel) { note.style.display = 'block'; note.textContent = v.syncLabel; }
   else note.style.display = 'none';
 
-  // 调试栏（模拟日期时显示，可随时改时间）
-  const box = $('debugBox');
-  const row = $('debugRow');
-  row.innerHTML = '';
-  if (v.simulated) {
-    box.style.display = 'block';
-    const lbl = document.createElement('span'); lbl.textContent = '模拟今天：';
-    const input = document.createElement('input');
-    input.type = 'date'; input.value = v.dateKey;
-    input.addEventListener('change', () => {
-      if (input.value) sendDebugDate(input.value);
-    });
-    const bPrev = mkBtn('前一天', () => shiftDate(-1));
-    const bNext = mkBtn('后一天', () => shiftDate(1));
-    const bReal = mkBtn('恢复真实', () => sendDebugDate(''));
-    const bForce = mkBtn('重弹一次', () => chrome.runtime.sendMessage({ type: MSG.DEBUG_FORCE }, r => { if (r) apply(r); }));
-    row.append(lbl, input, bPrev, bNext, bReal, bForce);
-    if (v.avail && v.avail.length) {
-      const sep = document.createElement('div'); sep.style.width = '100%'; row.appendChild(sep);
-      for (const a of v.avail.slice(0, 8)) {
-        const c = mkBtn(`${a.label}·${a.count}`, () => sendDebugDate(a.key));
-        row.appendChild(c);
-      }
-    }
-  } else box.style.display = 'none';
-}
-
-function mkBtn(label, fn) {
-  const b = document.createElement('button');
-  b.textContent = label; b.addEventListener('click', fn);
-  return b;
 }
 
 function apply(r) { if (r && r.v) render(r); }
@@ -117,15 +105,116 @@ function apply(r) { if (r && r.v) render(r); }
 function sendDebugDate(date) {
   chrome.runtime.sendMessage({ type: MSG.SET_DEBUG_DATE, date }, r => apply(r));
 }
-function shiftDate(delta) {
-  if (!view) return;
-  const d = keyToDate(view.dateKey);
-  d.setDate(d.getDate() + delta);
-  sendDebugDate(dateKeyFromDate(d));
-}
 
 function askView() {
   chrome.runtime.sendMessage({ type: MSG.GET_VIEW }, r => apply(r));
+}
+
+function localDateKey(year, month, day) {
+  return year + '-' + pad2(month + 1) + '-' + pad2(day);
+}
+
+function setActiveView(next) {
+  activeView = next === 'calendar' ? 'calendar' : 'today';
+  const isCalendar = activeView === 'calendar';
+  $('todayPanel').hidden = isCalendar;
+  $('calendarPanel').hidden = !isCalendar;
+  $('tabToday').classList.toggle('active', !isCalendar);
+  $('tabCalendar').classList.toggle('active', isCalendar);
+  $('tabToday').setAttribute('aria-selected', String(!isCalendar));
+  $('tabCalendar').setAttribute('aria-selected', String(isCalendar));
+  if (isCalendar && !calendarSummary) loadCalendarYear(calendarYear, true);
+}
+
+function loadCalendarYear(year, keepSelection) {
+  const seq = ++calendarRequestSeq;
+  chrome.runtime.sendMessage({ type: MSG.GET_CALENDAR_YEAR, year }, summary => {
+    if (seq !== calendarRequestSeq || !summary || !summary.days) return;
+    calendarSummary = summary;
+    calendarYear = summary.year;
+    if (!keepSelection || !calendarSelected.startsWith(calendarYear + '-')) {
+      calendarSelected = localDateKey(calendarYear, calendarMonth, 1);
+    }
+    renderCalendar();
+    loadCalendarDate(calendarSelected);
+  });
+}
+
+function loadCalendarDate(dateKey) {
+  calendarSelected = dateKey;
+  renderCalendar();
+  const wrap = $('calendarItems');
+  wrap.innerHTML = '<div class="calendar-loading">正在读取…</div>';
+  chrome.runtime.sendMessage({ type: MSG.GET_DATE_HITS, date: dateKey }, result => {
+    if (!result || result.dateKey !== calendarSelected) return;
+    const p = result.dateKey.split('-').map(Number);
+    const hits = result.hits || [];
+    $('calendarSelectedTitle').textContent = `${p[1]} 月 ${p[2]} 日 · 历史上的今天`;
+    $('calendarSelectedCount').textContent = `${hits.length} 条`;
+    renderHitList(wrap, hits, '这一天暂时没有历史投稿');
+  });
+}
+
+function renderCalendar() {
+  if (!calendarSummary) return;
+  $('calendarTitle').textContent = `${calendarYear} 年 ${calendarMonth + 1} 月`;
+  const days = $('calendarDays');
+  days.innerHTML = '';
+  const first = new Date(calendarYear, calendarMonth, 1);
+  const offset = (first.getDay() + 6) % 7;
+  const start = new Date(calendarYear, calendarMonth, 1 - offset);
+  const realKey = todayKey();
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const key = localDateKey(d.getFullYear(), d.getMonth(), d.getDate());
+    const count = calendarSummary.days[key] || 0;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'calendar-day' +
+      (d.getMonth() !== calendarMonth ? ' outside' : '') +
+      (key === realKey ? ' today' : '') +
+      (key === calendarSelected ? ' selected' : '');
+    b.setAttribute('role', 'gridcell');
+    b.setAttribute('aria-label', `${d.getMonth() + 1} 月 ${d.getDate()} 日，${count} 条历史投稿`);
+    const number = document.createElement('span'); number.textContent = d.getDate();
+    b.appendChild(number);
+    if (count) {
+      const n = document.createElement('span'); n.className = 'calendar-count'; n.textContent = count + ' 条';
+      b.appendChild(n);
+    }
+    b.addEventListener('click', () => {
+      const targetYear = d.getFullYear();
+      calendarMonth = d.getMonth();
+      calendarSelected = key;
+      if (targetYear !== calendarYear) loadCalendarYear(targetYear, true);
+      else loadCalendarDate(key);
+    });
+    days.appendChild(b);
+  }
+  const minYear = calendarSummary.minYear || calendarYear;
+  const maxYear = calendarSummary.maxYear || calendarYear;
+  $('calendarPrevYear').disabled = calendarYear <= minYear;
+  $('calendarNextYear').disabled = calendarYear >= maxYear;
+  $('calendarPrevMonth').disabled = calendarYear <= minYear && calendarMonth === 0;
+  $('calendarNextMonth').disabled = calendarYear >= maxYear && calendarMonth === 11;
+}
+
+function moveCalendarMonth(delta) {
+  const d = new Date(calendarYear, calendarMonth + delta, 1);
+  if (!calendarSummary) return;
+  if (d.getFullYear() < calendarSummary.minYear || d.getFullYear() > calendarSummary.maxYear) return;
+  calendarMonth = d.getMonth();
+  calendarSelected = localDateKey(d.getFullYear(), d.getMonth(), 1);
+  if (d.getFullYear() !== calendarYear) loadCalendarYear(d.getFullYear(), true);
+  else loadCalendarDate(calendarSelected);
+}
+
+function moveCalendarYear(delta) {
+  if (!calendarSummary) return;
+  const target = calendarYear + delta;
+  if (target < calendarSummary.minYear || target > calendarSummary.maxYear) return;
+  calendarSelected = localDateKey(target, calendarMonth, 1);
+  loadCalendarYear(target, true);
 }
 
 let syncScope = 'all';   // 本次同步范围：全部 / 仅自建 / 仅追更
@@ -133,6 +222,19 @@ let syncScope = 'all';   // 本次同步范围：全部 / 仅自建 / 仅追更
 document.addEventListener('DOMContentLoaded', () => {
   $('btnGoStart').addEventListener('click', () => {
     chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
+  });
+  $('tabToday').addEventListener('click', () => setActiveView('today'));
+  $('tabCalendar').addEventListener('click', () => setActiveView('calendar'));
+  $('calendarPrevMonth').addEventListener('click', () => moveCalendarMonth(-1));
+  $('calendarNextMonth').addEventListener('click', () => moveCalendarMonth(1));
+  $('calendarPrevYear').addEventListener('click', () => moveCalendarYear(-1));
+  $('calendarNextYear').addEventListener('click', () => moveCalendarYear(1));
+  $('calendarToday').addEventListener('click', () => {
+    const now = new Date();
+    calendarMonth = now.getMonth();
+    calendarSelected = todayKey();
+    if (calendarYear !== now.getFullYear()) loadCalendarYear(now.getFullYear(), true);
+    else loadCalendarDate(calendarSelected);
   });
   document.querySelectorAll('.scope-btn').forEach(b => {
     b.addEventListener('click', () => {
@@ -216,6 +318,14 @@ function cooldownText(seconds, reason) {
 let askTimer = null;
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
+  if (changes[CFG.KEY_ITEMS] || changes[CFG.KEY_FOLDERS] || changes[CFG.KEY_SETTINGS]) calendarDirty = true;
   clearTimeout(askTimer);
-  askTimer = setTimeout(askView, 400);
+  askTimer = setTimeout(() => {
+    askView();
+    if (calendarDirty) {
+      calendarDirty = false;
+      calendarSummary = null;
+      if (activeView === 'calendar') loadCalendarYear(calendarYear, true);
+    }
+  }, 400);
 });

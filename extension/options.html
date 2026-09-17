@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <title>哔哩朝花夕拾 - 设置</title>
   <style>
-    body { width: 760px; margin: 24px auto; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    body { width: 760px; max-width: calc(100% - 32px); margin: 24px auto; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
       color: #18191c; background: #f6f7f8; }
     h1 { font-size: 18px; }
     h1 small { color: #9499a0; font-size: 13px; font-weight: 400; margin-left: 8px; }
@@ -31,9 +31,6 @@
     .tag.collected { background: #e8f6fb; color: #00a1d6; }
     .folder .err { color: #d54949; font-size: 12px; }
     input[type=date] { border: 1px solid #c9cdd2; border-radius: 6px; padding: 5px 8px; font-size: 13px; }
-    .chip { border: 1px solid #d0d3d8; border-radius: 12px; padding: 3px 10px; font-size: 12px;
-      color: #00a1d6; cursor: pointer; background: #fff; margin: 3px 6px 0 0; }
-    .chip:hover { background: #e8f6fb; }
     .statusline { font-size: 13px; padding: 4px 0; }
     .fgroup-title { font-weight: 700; font-size: 13px; color: #61666d; padding: 10px 0 2px;
       margin-top: 8px; border-bottom: 1px solid #f1f2f3; }
@@ -56,10 +53,30 @@
     .adv-body { padding: 2px 18px 16px; }
     .adv-group { padding: 12px 0 2px; }
     .adv-title { font-weight: 700; font-size: 14px; margin: 0 0 6px; }
+    .calendar-note { display: flex; align-items: flex-start; gap: 9px; padding: 10px 12px; margin: 8px 0 4px;
+      border-radius: 8px; background: #e8f6fb; color: #61666d; font-size: 12px; line-height: 1.55; }
+    .calendar-note strong { color: #18191c; }
+    .debug-alert { display: none; padding: 10px 12px; margin: 0 0 14px; border-radius: 8px;
+      background: #fff7ec; color: #f08519; font-size: 13px; line-height: 1.5; }
+    .debug-alert.show { display: block; }
+    .debug-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .debug-switch-row label { flex: none; }
+    .debug-body { display: none; padding: 8px 0 0; }
+    .debug-body.show { display: block; }
+    .debug-help { margin-top: 5px; color: #9499a0; font-size: 12px; line-height: 1.55; }
+    @media (max-width: 680px) {
+      body { max-width: calc(100% - 20px); margin: 12px auto; }
+      .card, .adv-body { padding-left: 12px; padding-right: 12px; }
+      .row { flex-wrap: wrap; }
+      .fgroup-title.fgroup-toggle { flex-wrap: wrap; }
+      .fgroup-title .fgroup-t { min-width: 140px; }
+      .fgroup-title .cnt { width: 100%; order: 4; margin: 2px 0 4px 22px; }
+    }
   </style>
 </head>
 <body>
   <h1>哔哩朝花夕拾<small>设置</small></h1>
+  <div id="debugAlert" class="debug-alert"></div>
 
   <div class="card">
     <h2>登录与同步</h2>
@@ -91,6 +108,11 @@
 
   <div class="card">
     <h2>提醒与显示选项</h2>
+    <div class="desc">以下显示规则同时作用于首页提醒、Popup 今日列表和历史日历。</div>
+    <div class="calendar-note">
+      <span>📅</span>
+      <div><strong>历史日历无需单独设置</strong><br />入口位于扩展 Popup 的“历史日历”页签；浏览日期不会改变首页的“今天”。</div>
+    </div>
     <div class="row">
       <label><input type="checkbox" id="optHideInvalid" /> 不提醒/不展示已失效视频（默认开）</label>
     </div>
@@ -141,17 +163,25 @@
       </div>
 
       <div class="adv-group">
-        <div class="adv-title">🧪 调试：模拟“今天”</div>
-        <div class="row">
-          <span>当前生效：</span><strong id="effNow">-</strong>
-          <button id="btnReal">恢复真实日期</button>
-          <button id="btnForce">清除今日去重标记</button>
+        <div class="debug-switch-row">
+          <div>
+            <div class="adv-title">🧪 开发调试 · 模拟首页日期</div>
+            <div class="muted">仅用于测试首页在指定日期的提醒效果，不用于日常浏览。</div>
+          </div>
+          <label><input type="checkbox" id="debugToggle" /> 启用</label>
         </div>
-        <div class="row">
-          <span>模拟日期：</span><input type="date" id="debugDate" />
-          <button id="btnSetDebug">应用</button>
+        <div id="debugBody" class="debug-body">
+          <div class="row">
+            <span>当前生效：</span><strong id="effNow">-</strong>
+          </div>
+          <div class="row">
+            <span>模拟首页日期：</span><input type="date" id="debugDate" />
+            <button id="btnSetDebug" class="primary">应用日期</button>
+            <button id="btnReal">恢复真实今天</button>
+            <button id="btnForce">清除当天去重</button>
+          </div>
+          <div class="debug-help">会影响：首页提醒、Popup“今日”页和年份文案。不会影响：历史日历中主动选择的浏览日期。</div>
         </div>
-        <div id="availChips"></div>
       </div>
 
       <div class="adv-group">

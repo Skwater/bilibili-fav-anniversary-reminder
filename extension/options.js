@@ -5,6 +5,7 @@ const $ = id => document.getElementById(id);
 let settings = null;
 let view = null;
 let syncScope = 'all';   // 本次同步范围：全部 / 仅自建 / 仅追更
+let debugEditorOpen = false;
 const collapsedGroups = new Set();   // 记录被折叠的分组（'created' / 'collected'），重绘时保持折叠
 
 function getView() {
@@ -32,24 +33,16 @@ function renderView(v) {
   sync.textContent = parts.join('　');
   if (v.syncing && v.syncLabel) sync.textContent += '\n' + v.syncLabel;
 
-  const eff = $('effNow');
-  eff.textContent = v.dateKey + (v.simulated ? '（模拟日期）' : '（真实今天）');
-  if (document.activeElement !== $('debugDate')) $('debugDate').value = v.dateKey;
-
-  // 可用日期 chips（有收藏内容的 MM-DD）
-  const box = $('availChips');
-  box.innerHTML = '';
-  if (v.avail && v.avail.length) {
-    const t = document.createElement('span'); t.className = 'muted';
-    t.textContent = '收藏中出现过的日期（点击设为模拟日期）：';
-    box.appendChild(t);
-    for (const a of v.avail.slice(0, 14)) {
-      const c = document.createElement('button');
-      c.className = 'chip'; c.textContent = `${a.label}·${a.count}条`;
-      c.addEventListener('click', () => setDebugDate(a.key));
-      box.appendChild(c);
-    }
-  }
+  const debugOpen = v.simulated || debugEditorOpen;
+  $('debugToggle').checked = debugOpen;
+  $('debugBody').classList.toggle('show', debugOpen);
+  $('effNow').textContent = v.dateKey + (v.simulated ? '（模拟首页日期）' : '（真实今天）');
+  if (document.activeElement !== $('debugDate')) $('debugDate').value = v.simulated ? v.dateKey : todayKey();
+  const alert = $('debugAlert');
+  alert.classList.toggle('show', v.simulated);
+  alert.textContent = v.simulated
+    ? `🧪 模拟首页日期 ${v.dateKey} 正在生效；历史日历仍可独立浏览。`
+    : '';
 }
 
 /* 顶部与分组标题共用同一统计口径，避免“选中”数量显示不一致。 */
@@ -265,9 +258,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   $('btnSetDebug').addEventListener('click', () => {
     const val = $('debugDate').value;
-    if (val && isValidDateKey(val)) setDebugDate(val);
+    if (val && isValidDateKey(val)) { debugEditorOpen = true; setDebugDate(val); }
   });
-  $('btnReal').addEventListener('click', () => setDebugDate(''));
+  $('debugToggle').addEventListener('change', e => {
+    debugEditorOpen = e.target.checked;
+    $('debugBody').classList.toggle('show', debugEditorOpen);
+    if (debugEditorOpen) {
+      const val = $('debugDate').value;
+      setDebugDate(val && isValidDateKey(val) ? val : todayKey());
+    } else {
+      setDebugDate('');
+    }
+  });
+  $('btnReal').addEventListener('click', () => { debugEditorOpen = false; setDebugDate(''); });
   $('btnForce').addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: MSG.DEBUG_FORCE }, r => { if (r && r.v) renderView(r); });
   });
