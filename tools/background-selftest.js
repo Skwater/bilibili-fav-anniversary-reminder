@@ -61,7 +61,7 @@ const context = vm.createContext({
 const expose = `
 globalThis.__bgtest = {
   CFG, mem, loginInfo,
-  refreshLogin, ensureFolderList, syncOneFolder, runSyncPass, runRefresh, handle,
+  refreshLogin, ensureFolderList, syncOneFolder, runSyncPass, runRefresh, handle, buildView,
   fingerprintIds, folderAidSet, resetForAccountSwitch, hitsForDateKey, computeCalendarYear,
   setBurstLimit(value) { burstLimit = value; },
   clearRate() { rateUntil = 0; pauseReason = ''; delete mem.meta.resumeAt; delete mem.meta.resumeReason; },
@@ -216,6 +216,22 @@ function media(id, title) {
     assert(api.hitsForDateKey('2026-02-28').length === 2, '平年日期详情未包含闰日投稿');
     const leap = api.computeCalendarYear(2024);
     assert(leap.days['2024-02-28'] === 1 && leap.days['2024-02-29'] === 1, '闰年没有拆分 2/28 与 2/29');
+  });
+
+  await test('设置页概览分别统计启用条目与全部缓存条目', async () => {
+    api.mem.meta.mid = 42;
+    api.mem.folders = [
+      { mediaId: 1, title: '启用夹', enabled: true },
+      { mediaId: 2, title: '关闭夹', enabled: false }
+    ];
+    api.mem.items = {
+      BV1: { aid: 1, bvid: 'BV1', type: 2, title: '仅启用夹', pubtime: 1, attr: 0, folderIds: [1] },
+      BV2: { aid: 2, bvid: 'BV2', type: 2, title: '仅关闭夹', pubtime: 1, attr: 0, folderIds: [2] },
+      BV3: { aid: 3, bvid: 'BV3', type: 2, title: '两个夹共有', pubtime: 1, attr: 0, folderIds: [1, 2] }
+    };
+    const view = await api.buildView();
+    assert(view.folders.enabledItems === 2, '启用条目没有按唯一视频和启用夹关系统计');
+    assert(view.folders.items === 3, '全部缓存条目统计错误');
   });
 
   await test('追更列表第 2 页失败时拒绝提交残缺列表', async () => {

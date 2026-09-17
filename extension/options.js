@@ -27,7 +27,10 @@ function renderView(v) {
   else login.textContent = '登录状态未知' + (v.loginError ? '：' + v.loginError : '');
 
   const sync = $('syncStatus');
-  const parts = [`收藏夹：${v.folders.enabled}/${v.folders.total} 个启用`, `条目：${v.folders.items} 条`];
+  const parts = [
+    `收藏夹：${v.folders.enabled}/${v.folders.total} 个启用`,
+    `条目：${v.folders.enabledItems}/${v.folders.items} 条启用`
+  ];
   if (v.firstSetupReason === 'accountChanged') parts.push('账号已切换，请回到 B 站首页重新选择收藏夹');
   parts.push(v.syncing ? '同步中…' : (v.lastSyncAt ? '最近同步：' + fmtDateTime(v.lastSyncAt) : '尚未同步'));
   sync.textContent = parts.join('　');

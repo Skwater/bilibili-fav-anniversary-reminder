@@ -1431,6 +1431,9 @@ async function buildView() {
   const nowSec = Date.now() / 1000;
   const res = computeHits();
   const enabled = enabledFolders();
+  const enabledIds = new Set(enabled.map(f => f.mediaId));
+  const enabledItems = Object.values(mem.items).reduce((count, it) =>
+    count + (Array.isArray(it.folderIds) && it.folderIds.some(id => enabledIds.has(id)) ? 1 : 0), 0);
   const syncing = refreshBusy || (flowCtx != null);
 
   // 登录态判定：只有“明确未登录”才是 'no'；检查飞行中与连接失败都不判未登录
@@ -1465,6 +1468,7 @@ async function buildView() {
     folders: {
       total: mem.folders.length,
       enabled: enabled.length,
+      enabledItems,
       items: Object.keys(mem.items).length
     },
     // 完整收藏夹明细（首次同步向导 / 设置页分组用）
