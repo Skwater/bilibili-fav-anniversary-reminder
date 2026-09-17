@@ -12,6 +12,10 @@
     .card h2 { margin: 0 0 10px; font-size: 15px; }
     .row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; }
     .row label { flex: 1; }
+    .sync-mode-row { flex-wrap: wrap; }
+    .sync-mode-row > label { flex: none; white-space: nowrap; }
+    .custom-sync-label { display: inline-flex; align-items: center; gap: 4px; }
+    .custom-sync-label input[type=number] { width: 52px; box-sizing: border-box; }
     .muted { color: #9499a0; font-size: 12px; }
     a { color: #00a1d6; text-decoration: none; overflow-wrap: anywhere; }
     a:hover { text-decoration: underline; }
@@ -80,12 +84,12 @@
     <h2>登录与同步</h2>
     <div id="loginStatus" class="statusline">加载中…</div>
     <div id="syncStatus" class="statusline"></div>
-    <div class="row">
+    <div class="row sync-mode-row">
       <span>自动同步：</span>
       <label><input type="radio" name="syncMode" value="manual" /> 手动（仅点同步按钮）</label>
       <label><input type="radio" name="syncMode" value="onHome" /> 首页每次</label>
       <label><input type="radio" name="syncMode" value="daily" /> 每天一次</label>
-      <label><input type="radio" name="syncMode" value="custom" /> 自定义：每
+      <label class="custom-sync-label"><input type="radio" name="syncMode" value="custom" /> 自定义：每
         <input type="number" id="customSyncDays" class="num3" min="1" max="365" step="1" value="3" aria-label="自定义同步间隔天数" /> 天一次
       </label>
     </div>
