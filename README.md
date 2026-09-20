@@ -8,7 +8,7 @@
 
 > 🛒 **一键安装**：[Chrome 应用商店 · 哔哩朝花夕拾](https://chromewebstore.google.com/detail/kgamlldkccpldahaohnbnnfdnegphppe)（商店版本以页面显示为准）
 
-打开 `https://www.bilibili.com/` 时，插件按你收藏夹内**视频投稿的发布时间**与今天（月-日）做匹配——如果若干年前的今天你收藏过某些投稿，右下角会弹出一张"X 年前的今天"卡片，点击可回到视频。
+打开 `https://www.bilibili.com/` 时，插件按你收藏夹内**视频投稿的发布时间**与今天（月-日）做匹配——如果收藏夹中存在若干年前的今天发布的投稿，右下角会弹出一张“X 年前的今天”卡片，点击可回到视频。
 
 ![哔哩朝花夕拾 · 今日回顾](assets/screenshot-1.png)
 
