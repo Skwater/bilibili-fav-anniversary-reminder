@@ -50,6 +50,8 @@ let loginCheckPromise = null;       // 登录检查 single-flight
 let pendingAccountSwitch = null;    // 同步运行中发现换号：停稳后再原子清理旧账号资源
 const RESUME_ALARM = 'dsh-sync-resume';
 let viewPushTimer = null;
+let dataEpoch = 0;                  // 清空/换号后递增，使此前发出的异步请求结果失效
+let folderListPromise = null;       // 同账号并发刷新共享一轮请求，避免结果互相覆盖
 
 function schedulePushView() {
   clearTimeout(viewPushTimer);
@@ -184,6 +186,8 @@ function clearPendingRequests() {
 }
 
 async function resetAllData() {
+  dataEpoch++;
+  folderListPromise = null;
   try { await chrome.alarms.clear(RESUME_ALARM); } catch (e) {}
   await chrome.storage.local.remove([
     CFG.KEY_META, CFG.KEY_FOLDERS, CFG.KEY_ITEMS, CFG.KEY_SYNC, CFG.KEY_SETTINGS
@@ -212,6 +216,8 @@ async function resetAllData() {
 async function resetForAccountSwitch(newMid) {
   const mid = Number(newMid) || 0;
   if (!mid) return false;
+  dataEpoch++;
+  folderListPromise = null;
   try { await chrome.alarms.clear(RESUME_ALARM); } catch (e) {}
 
   const nextMeta = {
@@ -388,6 +394,7 @@ async function refreshLogin(force) {
     const ttl = loginInfo.ok ? CFG.NAV_REFRESH_MS : CFG.NAV_FAIL_RETRY_MS;
     if (last && (now - last) < ttl) return;
   }
+  const requestEpoch = dataEpoch;
   const task = (async () => {
     loginInfo.checking = true;
     setFlow('正在检查登录状态…');
@@ -396,6 +403,12 @@ async function refreshLogin(force) {
       res = await proxyFetch(CFG.API.NAV);
     } catch (e) {
       res = { ok: false, error: String((e && e.message) || e) };
+    }
+
+    // 清空数据或换号后，旧请求所代表的账号上下文已经失效，禁止重新写回 mid/登录态。
+    if (requestEpoch !== dataEpoch) {
+      log('忽略已失效的登录检查结果');
+      return { state: 'stale' };
     }
 
     if (!res || !res.ok) {
@@ -446,6 +459,7 @@ async function refreshLogin(force) {
 
 /* ---------------- 收藏夹列表 ---------------- */
 async function ensureFolderList(force) {
+  if (folderListPromise) return folderListPromise;
   const need =
     force ||
     mem.folders.length === 0 ||
@@ -453,9 +467,20 @@ async function ensureFolderList(force) {
     (Date.now() - mem.meta.foldersSyncedAt * 1000) > CFG.FOLDER_LIST_REFRESH_MS;
   if (!need) return true;
 
+  const task = fetchFolderList();
+  folderListPromise = task;
+  try {
+    return await task;
+  } finally {
+    if (folderListPromise === task) folderListPromise = null;
+  }
+}
+
+async function fetchFolderList() {
   setFlow('正在读取收藏夹列表…');
   const mid = loginInfo.mid || mem.meta.mid || 0;
   if (!mid) { setFlow('缺少用户 mid，无法读取收藏夹'); log('ensureFolderList: mid 缺失'); return false; }
+  const requestEpoch = dataEpoch;
 
   const api = 'https://api.bilibili.com/x/v3/fav/folder';
   const byId = new Map(mem.folders.map(f => [f.mediaId, f]));
@@ -553,9 +578,36 @@ async function ensureFolderList(force) {
   }
 
   if (failCount === 0) {
+    // 清空、换号或更新一轮刷新已经发生时，本轮结果属于旧上下文，不得覆盖当前账号数据。
+    if (requestEpoch !== dataEpoch || Number(mem.meta.mid || loginInfo.mid || 0) !== Number(mid)) {
+      log('忽略已失效的收藏夹列表结果，mid =', mid);
+      return false;
+    }
+
+    // 官方完整列表中已消失的收藏夹视为已删除：移除条目关联；没有其他所属夹时删除条目。
+    // 设置页仅取消勾选不会进入这里，因此关闭同步范围仍会保留原缓存。
+    const nextIds = new Set(next.map(f => String(f.mediaId)));
+    const removedIds = new Set(mem.folders
+      .filter(f => !nextIds.has(String(f.mediaId)))
+      .map(f => String(f.mediaId)));
+    if (removedIds.size > 0) {
+      for (const key of Object.keys(mem.items)) {
+        const item = mem.items[key];
+        if (!item || !Array.isArray(item.folderIds)) continue;
+        const kept = item.folderIds.filter(id => !removedIds.has(String(id)));
+        if (kept.length === item.folderIds.length) continue;
+        if (kept.length === 0) delete mem.items[key];
+        else item.folderIds = kept;
+      }
+    }
     mem.folders = next;
     mem.meta.foldersSyncedAt = Date.now() / 1000;
-    await persistFolders(); await persistMeta();
+    // folders/items/meta 同批提交，避免列表已删除但条目关系尚未清理的半状态。
+    await storageSet({
+      [CFG.KEY_FOLDERS]: mem.folders,
+      [CFG.KEY_ITEMS]: mem.items,
+      [CFG.KEY_META]: mem.meta
+    });
     setFlow('共 ' + mem.folders.length + ' 个收藏夹');
     log('收藏夹列表拉取成功:', mem.folders.length, '个 | 来源:', results.join(', '));
     return true;

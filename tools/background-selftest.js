@@ -62,7 +62,7 @@ const expose = `
 globalThis.__bgtest = {
   CFG, mem, loginInfo,
   refreshLogin, ensureFolderList, syncOneFolder, runSyncPass, runRefresh, handle, buildView,
-  fingerprintIds, folderAidSet, resetForAccountSwitch, hitsForDateKey, computeCalendarYear, customSyncDue,
+  fingerprintIds, folderAidSet, resetAllData, resetForAccountSwitch, hitsForDateKey, computeCalendarYear, customSyncDue,
   setBurstLimit(value) { burstLimit = value; },
   clearRate() { rateUntil = 0; pauseReason = ''; delete mem.meta.resumeAt; delete mem.meta.resumeReason; },
   reset() {
@@ -97,6 +97,8 @@ globalThis.__bgtest = {
     pauseReason = '';
     clearAfterSync = false;
     forceSkipCooldown = false;
+    dataEpoch = 0;
+    folderListPromise = null;
   }
 };`;
 vm.runInContext(common + '\n' + background + '\n' + expose, context, { filename: 'background-test-bundle.js' });
@@ -183,6 +185,118 @@ function media(id, title) {
     const result = await api.refreshLogin(true);
     assert(result && !result.accountChanged, '同账号被误判为换号');
     assert(api.mem.meta.syncedOnce && api.mem.folders.length === 1 && api.mem.items.BV1, '同账号数据被误清理');
+  });
+
+  await test('换号后忽略旧账号尚未返回的收藏夹列表', async () => {
+    api.mem.meta = { mid: 11, syncedOnce: true };
+    api.loginInfo.mid = 11;
+    api.loginInfo.ok = true;
+    let releaseCreated;
+    let markCreatedEntered;
+    const createdEntered = new Promise(resolve => { markCreatedEntered = resolve; });
+    fetchHandler = async url => {
+      if (url.includes('/created/')) {
+        markCreatedEntered();
+        await new Promise(resolve => { releaseCreated = resolve; });
+        return { ok: true, json: { code: 0, data: { list: [
+          { id: 111, title: '旧账号收藏夹', media_count: 1 }
+        ] } } };
+      }
+      return { ok: true, json: { code: 0, data: { list: [], count: 0, has_more: false } } };
+    };
+    const pendingList = api.ensureFolderList(true);
+    await createdEntered;
+    await api.resetForAccountSwitch(22);
+    releaseCreated();
+    const ok = await pendingList;
+    assert(ok === false, '旧账号列表被报告为有效结果');
+    assert(api.mem.meta.mid === 22, '新账号归属被旧请求覆盖');
+    assert(api.mem.folders.length === 0, '旧账号收藏夹写入了新账号缓存');
+    assert(Array.isArray(store.folders) && store.folders.length === 0, '持久化缓存混入旧账号收藏夹');
+  });
+
+  await test('同账号并发刷新收藏夹时共享同一轮请求', async () => {
+    api.mem.meta = { mid: 42 };
+    api.loginInfo.mid = 42;
+    api.loginInfo.ok = true;
+    fetchHandler = async url => {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      if (url.includes('/created/')) return { ok: true, json: { code: 0, data: { list: [] } } };
+      return { ok: true, json: { code: 0, data: { list: [], count: 0, has_more: false } } };
+    };
+    const [first, second] = await Promise.all([
+      api.ensureFolderList(true),
+      api.ensureFolderList(true)
+    ]);
+    assert(first === true && second === true, '并发调用没有共享成功结果');
+    assert(executeCount === 2, '并发刷新重复请求了收藏夹接口，次数=' + executeCount);
+  });
+
+  await test('无需刷新调用不会吞掉紧随其后的强制刷新', async () => {
+    api.mem.meta = { mid: 42, foldersSyncedAt: Date.now() / 1000 };
+    api.loginInfo.mid = 42;
+    api.loginInfo.ok = true;
+    api.mem.folders = [{ mediaId: 1, title: '旧列表', enabled: true }];
+    fetchHandler = async url => {
+      if (url.includes('/created/')) return { ok: true, json: { code: 0, data: { list: [
+        { id: 2, title: '强制刷新结果', media_count: 0 }
+      ] } } };
+      return { ok: true, json: { code: 0, data: { list: [], count: 0, has_more: false } } };
+    };
+    const skipped = api.ensureFolderList(false);
+    const forced = api.ensureFolderList(true);
+    const [skippedOk, forcedOk] = await Promise.all([skipped, forced]);
+    assert(skippedOk === true && forcedOk === true, '刷新调用返回失败');
+    assert(executeCount === 2, '强制刷新被无需刷新调用吞掉，次数=' + executeCount);
+    assert(api.mem.folders.length === 1 && api.mem.folders[0].mediaId === 2,
+      '强制刷新结果没有提交');
+  });
+
+  await test('清空数据后忽略尚未返回的登录检查', async () => {
+    api.mem.meta = { mid: 11, syncedOnce: true };
+    let releaseNav;
+    let markNavEntered;
+    const navEntered = new Promise(resolve => { markNavEntered = resolve; });
+    fetchHandler = async () => {
+      markNavEntered();
+      await new Promise(resolve => { releaseNav = resolve; });
+      return { ok: true, json: { code: 0, data: { isLogin: true, mid: 11 } } };
+    };
+    const pendingLogin = api.refreshLogin(true);
+    await navEntered;
+    await api.resetAllData();
+    releaseNav();
+    const result = await pendingLogin;
+    assert(result && result.state === 'stale', '清空前的登录结果未被判为失效');
+    assert(!api.mem.meta.mid && !store.meta, '清空后旧登录请求重新写入了账号信息');
+  });
+
+  await test('完整列表删除收藏夹时清理孤立条目并保留共享条目', async () => {
+    api.mem.meta = { mid: 42, syncedOnce: true };
+    api.loginInfo.mid = 42;
+    api.loginInfo.ok = true;
+    api.mem.folders = [
+      { mediaId: 1, title: '已删除夹', enabled: true },
+      { mediaId: 2, title: '保留夹', enabled: true }
+    ];
+    api.mem.items = {
+      BV1: { aid: 1, bvid: 'BV1', folderIds: [1] },
+      BV2: { aid: 2, bvid: 'BV2', folderIds: [1, 2] }
+    };
+    fetchHandler = async url => {
+      if (url.includes('/created/')) return { ok: true, json: { code: 0, data: { list: [
+        { id: 2, title: '保留夹', media_count: 1 }
+      ] } } };
+      return { ok: true, json: { code: 0, data: { list: [], count: 0, has_more: false } } };
+    };
+    const ok = await api.ensureFolderList(true);
+    assert(ok === true && api.mem.folders.length === 1 && api.mem.folders[0].mediaId === 2,
+      '官方收藏夹列表没有正确收敛');
+    assert(!api.mem.items.BV1, '仅属于已删除收藏夹的孤立条目仍被保留');
+    assert(api.mem.items.BV2 && JSON.stringify(api.mem.items.BV2.folderIds) === '[2]',
+      '共享条目没有保留仍存在的收藏夹关系');
+    assert(!store.items.BV1 && JSON.stringify(store.items.BV2.folderIds) === '[2]',
+      '收藏夹与条目清理没有一致持久化');
   });
 
   await test('历史日历与今日提醒复用相同筛选口径', async () => {
