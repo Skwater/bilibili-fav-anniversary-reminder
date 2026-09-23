@@ -34,12 +34,14 @@ const CFG = {
     NAV: 'https://api.bilibili.com/x/web-interface/nav',
     FOLDER_CREATED: 'https://api.bilibili.com/x/v3/fav/folder/created/list-all',
     FOLDER_COLLECTED: 'https://api.bilibili.com/x/v3/fav/folder/collected/list',
-    MEDIA_LIST: 'https://api.bilibili.com/x/v3/fav/resource/list'
+    MEDIA_LIST: 'https://api.bilibili.com/x/v3/fav/resource/list',
+    WATCH_LATER: 'https://api.bilibili.com/x/v2/history/toview'
   },
 
   FOLDER_LIST_REFRESH_MS: 6 * 3600 * 1000, // 收藏夹列表刷新间隔
   NAV_REFRESH_MS: 10 * 60 * 1000,   // 登录检查成功后的缓存时长
   NAV_FAIL_RETRY_MS: 30 * 1000,     // 登录检查失败/未确认后的重试间隔（短缓存，避免抖动被钉死）
+  WATCH_LATER_REFRESH_MS: 5 * 60 * 1000, // 稍后再看状态缓存 5 分钟；成功添加后立即更新内存态
   PAGE_SIZE: 20,                    // resource/list 每页数量（上限 20）
   PAGE_GAP_MS: 450,                 // 页间基础间隔（+随机抖动 0~150ms）
   MAX_RETRY: 3,                     // 单页最大重试次数
@@ -78,6 +80,7 @@ const MSG = {
   EXPORT_DIAGNOSTICS: 'EXPORT_DIAGNOSTICS', // 导出脱敏诊断信息
   IMPORT_DATA: 'IMPORT_DATA',       // 导入本地备份 {backup, forceAccount:boolean}
   ADD_WATCH_LATER: 'ADD_WATCH_LATER', // 使用 B 站官方接口加入稍后再看 {aid:number}
+  REMOVE_WATCH_LATER: 'REMOVE_WATCH_LATER', // 使用 B 站官方接口移出稍后再看 {aid:number}
   CLEAR_DATA: 'CLEAR_DATA',         // 终止同步并清空全部本地数据
   LOG: 'LOG',
   /* background -> content */

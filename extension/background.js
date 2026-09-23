@@ -52,6 +52,23 @@ const RESUME_ALARM = 'dsh-sync-resume';
 let viewPushTimer = null;
 let dataEpoch = 0;                  // 清空/换号后递增，使此前发出的异步请求结果失效
 let folderListPromise = null;       // 同账号并发刷新共享一轮请求，避免结果互相覆盖
+const watchLaterInfo = {
+  mid: 0,
+  aids: new Set(),
+  checkedAt: 0,
+  failedAt: 0,
+  error: ''
+};
+let watchLaterPromise = null;
+
+function clearWatchLaterInfo() {
+  watchLaterInfo.mid = 0;
+  watchLaterInfo.aids = new Set();
+  watchLaterInfo.checkedAt = 0;
+  watchLaterInfo.failedAt = 0;
+  watchLaterInfo.error = '';
+  watchLaterPromise = null;
+}
 
 function schedulePushView() {
   clearTimeout(viewPushTimer);
@@ -199,6 +216,7 @@ function clearPendingRequests() {
 async function resetAllData() {
   dataEpoch++;
   folderListPromise = null;
+  clearWatchLaterInfo();
   try { await chrome.alarms.clear(RESUME_ALARM); } catch (e) {}
   await chrome.storage.local.remove([
     CFG.KEY_META, CFG.KEY_FOLDERS, CFG.KEY_ITEMS, CFG.KEY_SYNC, CFG.KEY_SETTINGS
@@ -391,6 +409,7 @@ async function resetForAccountSwitch(newMid) {
   if (!mid) return false;
   dataEpoch++;
   folderListPromise = null;
+  clearWatchLaterInfo();
   try { await chrome.alarms.clear(RESUME_ALARM); } catch (e) {}
 
   const nextMeta = {
@@ -531,6 +550,37 @@ function mainAddWatchLater(aid, timeoutMs) {
   })).finally(() => clearTimeout(timer));
 }
 
+/* 与添加接口相同，仅在用户点击对勾时临时读取 CSRF 并调用官方移除接口。 */
+function mainRemoveWatchLater(aid, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs || 20000);
+  const match = document.cookie.match(/(?:^|;\s*)bili_jct=([^;]+)/);
+  if (!match) {
+    clearTimeout(timer);
+    return Promise.resolve({ ok: false, error: 'NO_CSRF' });
+  }
+  const body = new URLSearchParams({ aid: String(aid), csrf: decodeURIComponent(match[1]) });
+  return fetch('https://api.bilibili.com/x/v2/history/toview/del', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+    body,
+    signal: controller.signal
+  }).then(async r => {
+    let json = null;
+    try { json = await r.json(); } catch (e) { json = null; }
+    return {
+      ok: r.ok && !!json && json.code === 0,
+      status: r.status,
+      code: json && json.code,
+      message: (json && json.message) || ''
+    };
+  }).catch(err => ({
+    ok: false,
+    error: err && err.name === 'AbortError' ? 'TIMEOUT' : String((err && err.message) || err)
+  })).finally(() => clearTimeout(timer));
+}
+
 function contentProxyFetch(url) {
   return new Promise(resolve => {
     const tabId = latestHomeTabId;
@@ -585,24 +635,71 @@ async function proxyFetch(url) {
   return { ok: false, error: 'PROXY_REBIND_FAILED' };
 }
 
+/* Popup 可以从任意网站打开。若当前没有可用的 B 站标签，先打开首页，
+   再等待页面进入可注入状态后继续执行用户刚才的稍后再看操作。 */
+async function prepareWatchLaterTab() {
+  const existing = await findHomeTab();
+  if (existing) return { tab: existing, opened: false };
+  try {
+    const tab = await chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
+    if (tab && tab.id != null) return { tab, opened: true };
+  } catch (e) {
+    return { tab: null, opened: false, error: String((e && e.message) || e) };
+  }
+  return { tab: null, opened: false, error: 'EMPTY_TAB' };
+}
+
+async function runWatchLaterMutation(target, func, aid) {
+  if (!target || !target.tab || target.tab.id == null) {
+    return { ok: false, error: (target && target.error) || 'NO_BILI_TAB' };
+  }
+  const deadline = Date.now() + CFG.PROXY_TIMEOUT_MS;
+  while (true) {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: target.tab.id },
+        world: 'MAIN',
+        func,
+        args: [aid, CFG.PROXY_TIMEOUT_MS]
+      });
+      return (results && results[0] && results[0].result) ||
+        { ok: false, error: 'EMPTY_INJECT', message: 'B 站未返回结果' };
+    } catch (e) {
+      // 新标签仍在导航时注入会失败；只对刚创建的首页等待重试，避免重复提交请求。
+      if (!target.opened || Date.now() >= deadline) {
+        return { ok: false, error: 'INJECT_FAILED', message: String((e && e.message) || e) };
+      }
+      await sleep(300);
+    }
+  }
+}
+
 async function addToWatchLater(aid) {
   const numericAid = Number(aid);
   if (!Number.isSafeInteger(numericAid) || numericAid <= 0) {
     return { ok: false, error: 'INVALID_AID', message: '视频编号无效' };
   }
-  const tab = await findHomeTab();
-  if (!tab) return { ok: false, error: 'NO_BILI_TAB', message: '请先打开并登录哔哩哔哩' };
-  latestHomeTabId = tab.id;
+  const target = await prepareWatchLaterTab();
+  if (!target.tab) return { ok: false, error: target.error || 'NO_BILI_TAB', message: '无法打开哔哩哔哩首页' };
+  latestHomeTabId = target.tab.id;
   try {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      world: 'MAIN',
-      func: mainAddWatchLater,
-      args: [numericAid, CFG.PROXY_TIMEOUT_MS]
-    });
-    const result = results && results[0] && results[0].result;
+    const result = await runWatchLaterMutation(target, mainAddWatchLater, numericAid);
     if (!result) return { ok: false, error: 'EMPTY_INJECT', message: 'B 站未返回结果' };
-    if (result.ok) return { ok: true };
+    if (result.ok) {
+      const mid = Number(loginInfo.mid || mem.meta.mid) || 0;
+      if (mid) {
+        if (watchLaterInfo.mid !== mid) {
+          watchLaterInfo.mid = mid;
+          watchLaterInfo.aids = new Set();
+        }
+        watchLaterInfo.aids.add(numericAid);
+        watchLaterInfo.checkedAt = Date.now();
+        watchLaterInfo.failedAt = 0;
+        watchLaterInfo.error = '';
+      }
+      schedulePushView();
+      return { ok: true, inWatchLater: true };
+    }
     if (result.error === 'NO_CSRF' || result.code === -101) {
       return { ok: false, error: 'NOT_LOGGED_IN', message: '请先登录哔哩哔哩' };
     }
@@ -610,6 +707,111 @@ async function addToWatchLater(aid) {
   } catch (e) {
     return { ok: false, error: 'INJECT_FAILED', message: String((e && e.message) || e) };
   }
+}
+
+async function removeFromWatchLater(aid) {
+  const numericAid = Number(aid);
+  if (!Number.isSafeInteger(numericAid) || numericAid <= 0) {
+    return { ok: false, error: 'INVALID_AID', message: '视频编号无效' };
+  }
+  const target = await prepareWatchLaterTab();
+  if (!target.tab) return { ok: false, error: target.error || 'NO_BILI_TAB', message: '无法打开哔哩哔哩首页' };
+  latestHomeTabId = target.tab.id;
+  try {
+    const result = await runWatchLaterMutation(target, mainRemoveWatchLater, numericAid);
+    if (!result) return { ok: false, error: 'EMPTY_INJECT', message: 'B 站未返回结果' };
+    if (result.ok) {
+      const mid = Number(loginInfo.mid || mem.meta.mid) || 0;
+      if (mid && watchLaterInfo.mid === mid) {
+        watchLaterInfo.aids.delete(numericAid);
+        watchLaterInfo.checkedAt = Date.now();
+        watchLaterInfo.failedAt = 0;
+        watchLaterInfo.error = '';
+      }
+      schedulePushView();
+      return { ok: true, inWatchLater: false };
+    }
+    if (result.error === 'NO_CSRF' || result.code === -101) {
+      return { ok: false, error: 'NOT_LOGGED_IN', message: '请先登录哔哩哔哩' };
+    }
+    return Object.assign({}, result, { message: result.message || '移出稍后再看失败' });
+  } catch (e) {
+    return { ok: false, error: 'INJECT_FAILED', message: String((e && e.message) || e) };
+  }
+}
+
+/* 稍后再看是账号侧的易变状态，只保存在当前 Service Worker 内存中。
+   使用现有 B 站页面代发官方接口，不保存 Cookie，也不新增扩展权限。 */
+function watchLaterAidsFrom(json) {
+  const list = json && json.data && Array.isArray(json.data.list) ? json.data.list : [];
+  const aids = new Set();
+  for (const item of list) {
+    const aid = Number(item && (item.aid || item.avid));
+    if (Number.isSafeInteger(aid) && aid > 0) aids.add(aid);
+  }
+  return aids;
+}
+
+async function refreshWatchLater(force) {
+  const mid = Number(loginInfo.mid) || 0;
+  if (!loginInfo.ok || !mid) {
+    clearWatchLaterInfo();
+    return { ok: false, skipped: true };
+  }
+  if (watchLaterPromise) return watchLaterPromise;
+  const now = Date.now();
+  if (!force && watchLaterInfo.mid === mid && watchLaterInfo.checkedAt &&
+      now - watchLaterInfo.checkedAt < CFG.WATCH_LATER_REFRESH_MS) {
+    return { ok: true, cached: true };
+  }
+  if (!force && watchLaterInfo.mid === mid && watchLaterInfo.failedAt &&
+      now - watchLaterInfo.failedAt < CFG.NAV_FAIL_RETRY_MS) {
+    return { ok: false, cachedFailure: true, error: watchLaterInfo.error };
+  }
+
+  const requestEpoch = dataEpoch;
+  const requestMid = mid;
+  const task = (async () => {
+    let res = null;
+    try { res = await proxyFetch(CFG.API.WATCH_LATER); }
+    catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+
+    if (requestEpoch !== dataEpoch || !loginInfo.ok || Number(loginInfo.mid) !== requestMid) {
+      return { ok: false, stale: true };
+    }
+    const json = res && res.json;
+    if (res && res.ok && json && json.code === 0) {
+      watchLaterInfo.mid = requestMid;
+      watchLaterInfo.aids = watchLaterAidsFrom(json);
+      watchLaterInfo.checkedAt = Date.now();
+      watchLaterInfo.failedAt = 0;
+      watchLaterInfo.error = '';
+      return { ok: true, count: watchLaterInfo.aids.size };
+    }
+
+    // 失败时保留同账号上一次成功结果，避免一次网络抖动让对勾全部消失。
+    if (watchLaterInfo.mid !== requestMid) {
+      watchLaterInfo.mid = requestMid;
+      watchLaterInfo.aids = new Set();
+      watchLaterInfo.checkedAt = 0;
+    }
+    watchLaterInfo.failedAt = Date.now();
+    watchLaterInfo.error = (json && (json.message || json.code)) ||
+      (res && (res.error || res.status)) || '未知错误';
+    log('读取稍后再看状态失败:', watchLaterInfo.error);
+    return { ok: false, error: watchLaterInfo.error };
+  })();
+  watchLaterPromise = task;
+  try { return await task; }
+  finally { if (watchLaterPromise === task) watchLaterPromise = null; }
+}
+
+function decorateWatchLaterHits(hits) {
+  const mid = Number(loginInfo.mid || mem.meta.mid) || 0;
+  const known = !!mid && watchLaterInfo.mid === mid;
+  return hits.map(hit => Object.assign({}, hit, {
+    inWatchLater: known && watchLaterInfo.aids.has(Number(hit.aid))
+  }));
 }
 
 /* ---------------- 登录态 ----------------
@@ -666,6 +868,7 @@ async function refreshLogin(force) {
       // 明确退出只改变运行时登录态；meta.mid 是本地缓存归属，必须保留，
       // 才能在之后登录另一个账号时可靠识别换号。
       loginInfo.ok = false; loginInfo.mid = 0; loginInfo.error = '';
+      clearWatchLaterInfo();
       loginInfo.checkedAt = Date.now(); loginInfo.failedAt = 0;
       setFlow('未登录哔哩哔哩');
       return { state: 'no' };
@@ -1754,7 +1957,7 @@ async function buildView() {
     dateKey: res.effKey,
     simulated: res.simulated,
     effYear: res.effYear,
-    hits: res.hits,
+    hits: decorateWatchLaterHits(res.hits),
     hitTotal: res.hits.length,
     avail: res.avail,
     folders: {
@@ -1866,6 +2069,7 @@ async function handle(msg, sender) {
       let loginResult = null;
       try { loginResult = await refreshLogin(true); } catch (e) { log('首页登录复核失败:', e); }
       if (loginResult && loginResult.accountChanged && loginResult.deferred) return buildView();
+      if (loginInfo.ok) await refreshWatchLater(false);
 
       // 首次或换号后先拉收藏夹列表，供“自选收藏夹”向导使用。
       if (loginInfo.ok && !mem.meta.syncedOnce && mem.folders.length === 0) {
@@ -1921,6 +2125,8 @@ async function handle(msg, sender) {
     }
 
     case MSG.GET_VIEW:
+      await refreshLogin(false);
+      if (loginInfo.ok) await refreshWatchLater(false);
       return buildView();
 
     case MSG.GET_CALENDAR_YEAR:
@@ -1928,7 +2134,9 @@ async function handle(msg, sender) {
 
     case MSG.GET_DATE_HITS: {
       const date = isValidDateKey(msg.date) ? msg.date : todayKey();
-      return { dateKey: date, hits: hitsForDateKey(date) };
+      await refreshLogin(false);
+      if (loginInfo.ok) await refreshWatchLater(false);
+      return { dateKey: date, hits: decorateWatchLaterHits(hitsForDateKey(date)) };
     }
 
     case MSG.EXPORT_DATA:
@@ -1943,6 +2151,7 @@ async function handle(msg, sender) {
     case MSG.CHECK_LOGIN: {
       // 手动重试登录检查：跳过 TTL 立即复查（“无法连接”卡上的“重试”按钮）
       await refreshLogin(true);
+      if (loginInfo.ok) await refreshWatchLater(true);
       const lv = await buildView();
       pushView();
       return lv;
@@ -2146,6 +2355,9 @@ async function handle(msg, sender) {
 
     case MSG.ADD_WATCH_LATER:
       return addToWatchLater(msg.aid);
+
+    case MSG.REMOVE_WATCH_LATER:
+      return removeFromWatchLater(msg.aid);
 
     case MSG.LOG:
       log('[content]', msg.level || 'info', msg.text || '');

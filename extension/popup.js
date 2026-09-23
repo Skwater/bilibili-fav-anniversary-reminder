@@ -32,38 +32,50 @@ const WATCH_LATER_PATHS = [
   'M15.3914 9.1412a.625.625 0 0 1 .8839 0L17.5 10.3659l1.2248-1.2247a.625.625 0 0 1 .8838.8839l-1.5194 1.5193a.8333.8333 0 0 1-1.1785 0l-1.5193-1.5193a.625.625 0 0 1 0-.8839Z',
   'M12.4993 9.2784a.8333.8333 0 0 1 0 1.4429l-3.1254 1.8045a.8333.8333 0 0 1-1.2496-.7215V8.1954a.8333.8333 0 0 1 1.2496-.7215l3.1254 1.8045Z'
 ];
+const WATCH_LATER_DONE_PATHS = [
+  'M2.4836 10.2748a.625.625 0 0 1 .8839 0l3.3882 3.3882a.8333.8333 0 0 0 1.1785 0l8.6915-8.6915a.625.625 0 1 1 .8839.8839L8.8181 14.5469a2.0833 2.0833 0 0 1-2.9463 0l-3.3882-3.3882a.625.625 0 0 1 0-.8839Z'
+];
+
+function setWatchLaterButtonState(button, inWatchLater) {
+  const svg = button.querySelector('svg');
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  for (const data of (inWatchLater ? WATCH_LATER_DONE_PATHS : WATCH_LATER_PATHS)) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', data);
+    svg.appendChild(path);
+  }
+  button.classList.toggle('done', !!inWatchLater);
+  button.dataset.inWatchLater = inWatchLater ? '1' : '0';
+  button.disabled = false;
+  const label = inWatchLater ? '移出稍后再看' : '添加至稍后再看';
+  button.title = label;
+  button.setAttribute('aria-label', label);
+}
 
 function watchLaterButton(h) {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'watch-later';
-  button.title = '添加至稍后再看';
-  button.setAttribute('aria-label', '添加至稍后再看');
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 20 20');
   svg.setAttribute('aria-hidden', 'true');
-  for (const data of WATCH_LATER_PATHS) {
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', data);
-    svg.appendChild(path);
-  }
   button.appendChild(svg);
+  setWatchLaterButtonState(button, !!h.inWatchLater);
   button.addEventListener('click', e => {
     e.preventDefault();
     e.stopPropagation();
     if (button.disabled) return;
+    const wasInWatchLater = button.dataset.inWatchLater === '1';
     button.disabled = true;
     button.classList.add('pending');
-    button.title = '正在添加…';
-    chrome.runtime.sendMessage({ type: MSG.ADD_WATCH_LATER, aid: h.aid }, resp => {
+    button.title = wasInWatchLater ? '正在移出…' : '正在添加…';
+    chrome.runtime.sendMessage({ type: wasInWatchLater ? MSG.REMOVE_WATCH_LATER : MSG.ADD_WATCH_LATER, aid: h.aid }, resp => {
       button.classList.remove('pending');
       if (resp && resp.ok) {
-        button.classList.add('done');
-        button.title = '已加入稍后再看';
-        button.setAttribute('aria-label', '已加入稍后再看');
+        setWatchLaterButtonState(button, !wasInWatchLater);
       } else {
-        button.disabled = false;
-        button.title = (resp && resp.message) || '添加失败，请重试';
+        setWatchLaterButtonState(button, wasInWatchLater);
+        button.title = (resp && resp.message) || (wasInWatchLater ? '移出失败，请重试' : '添加失败，请重试');
         button.setAttribute('aria-label', button.title);
       }
     });

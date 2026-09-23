@@ -11,6 +11,7 @@ const background = fs.readFileSync(path.join(root, 'extension', 'background.js')
 let fetchHandler = async () => ({ ok: false, error: 'UNMOCKED' });
 let executeCount = 0;
 let tabQueryResult = [{ id: 1, url: 'https://www.bilibili.com/' }];
+const createdTabs = [];
 const writes = [];
 const store = {};
 const badgeTexts = [];
@@ -45,7 +46,7 @@ const chrome = {
   tabs: {
     async query() { return clone(tabQueryResult); },
     async sendMessage() { return {}; },
-    async create() { return { id: 2 }; },
+    async create(options) { createdTabs.push(clone(options)); return { id: 2, url: options && options.url }; },
     onRemoved: { addListener() {} }
   },
   alarms: {
@@ -71,7 +72,8 @@ globalThis.__bgtest = {
   CFG, mem, loginInfo,
   refreshLogin, ensureFolderList, syncOneFolder, runSyncPass, runRefresh, handle, buildView,
   fingerprintIds, folderAidSet, resetAllData, resetForAccountSwitch, hitsForDateKey, computeCalendarYear, customSyncDue,
-  createDataBackup, createDiagnosticExport, validateDataBackup, importDataBackup, setSyncBadge, addToWatchLater,
+  createDataBackup, createDiagnosticExport, validateDataBackup, importDataBackup, setSyncBadge, addToWatchLater, removeFromWatchLater,
+  refreshWatchLater, decorateWatchLaterHits,
   setBurstLimit(value) { burstLimit = value; },
   clearRate() { rateUntil = 0; pauseReason = ''; delete mem.meta.resumeAt; delete mem.meta.resumeReason; },
   reset() {
@@ -108,6 +110,7 @@ globalThis.__bgtest = {
     forceSkipCooldown = false;
     dataEpoch = 0;
     folderListPromise = null;
+    clearWatchLaterInfo();
   }
 };`;
 vm.runInContext(common + '\n' + background + '\n' + expose, context, { filename: 'background-test-bundle.js' });
@@ -119,6 +122,7 @@ async function test(name, fn) {
     api.reset();
     writes.length = 0;
     executeCount = 0;
+    createdTabs.length = 0;
     tabQueryResult = [{ id: 1, url: 'https://www.bilibili.com/' }];
     for (const key of Object.keys(store)) delete store[key];
     await fn();
@@ -198,6 +202,54 @@ function media(id, title) {
     fetchHandler = async aid => ({ ok: Number(aid) === 123 });
     const added = await api.addToWatchLater(123);
     assert(added.ok && executeCount === 1, '稍后再看未通过页面主世界执行');
+  });
+
+  await test('没有 B 站标签时自动打开首页并继续添加', async () => {
+    tabQueryResult = [];
+    fetchHandler = async aid => ({ ok: Number(aid) === 456 });
+    const added = await api.addToWatchLater(456);
+    assert(added.ok, '自动打开首页后没有继续添加');
+    assert(createdTabs.length === 1 && createdTabs[0].url === 'https://www.bilibili.com/' && createdTabs[0].active,
+      '没有以前台方式打开 B 站首页');
+    assert(executeCount === 1, '页面可用后没有执行原添加请求');
+  });
+
+  await test('稍后再看列表状态写入视图并区分已加入投稿', async () => {
+    api.mem.meta = { mid: 42, syncedOnce: true };
+    api.mem.folders = [{ mediaId: 1, title: '夹', enabled: true }];
+    const pubtime = new Date(2020, 1, 3, 12, 0, 0).getTime() / 1000;
+    api.mem.items = {
+      BV1: { aid: 101, bvid: 'BV1', type: 2, title: '已加入', pubtime, attr: 0, folderIds: [1] },
+      BV2: { aid: 202, bvid: 'BV2', type: 2, title: '未加入', pubtime, attr: 0, folderIds: [1] }
+    };
+    api.mem.settings.debugDate = '2030-02-03';
+    api.loginInfo.ok = true;
+    api.loginInfo.mid = 42;
+    api.loginInfo.checkedAt = Date.now();
+    fetchHandler = async url => {
+      assert(String(url).includes('/history/toview'), '请求了错误的稍后再看接口: ' + url);
+      return { ok: true, json: { code: 0, data: { list: [{ aid: 101 }] } } };
+    };
+    const view = await api.handle({ type: 'GET_VIEW' }, {});
+    assert(view.hits.length === 2, '测试投稿未进入视图');
+    assert(view.hits.find(h => h.aid === 101).inWatchLater === true, '已加入投稿未显示对勾状态');
+    assert(view.hits.find(h => h.aid === 202).inWatchLater === false, '未加入投稿状态错误');
+  });
+
+  await test('添加和移出成功后立即更新稍后再看状态且换号会清除', async () => {
+    api.mem.meta.mid = 42;
+    api.loginInfo.ok = true;
+    api.loginInfo.mid = 42;
+    fetchHandler = async () => ({ ok: true });
+    const added = await api.addToWatchLater(303);
+    assert(added.ok && added.inWatchLater, '添加结果未返回已加入状态');
+    assert(api.decorateWatchLaterHits([{ aid: 303 }])[0].inWatchLater, '添加后内存状态未更新');
+    const removed = await api.removeFromWatchLater(303);
+    assert(removed.ok && removed.inWatchLater === false, '移出结果未返回未加入状态');
+    assert(!api.decorateWatchLaterHits([{ aid: 303 }])[0].inWatchLater, '移出后内存状态未更新');
+    await api.addToWatchLater(303);
+    await api.resetForAccountSwitch(99);
+    assert(!api.decorateWatchLaterHits([{ aid: 303 }])[0].inWatchLater, '换号后残留旧账号状态');
   });
 
   await test('登录检查 single-flight：并发调用只请求一次', async () => {

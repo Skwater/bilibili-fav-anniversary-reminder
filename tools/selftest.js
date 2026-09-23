@@ -40,6 +40,7 @@ eq(f.MSG.GET_DATE_HITS, 'GET_DATE_HITS', '日历日期消息常量存在');
 eq(f.MSG.EXPORT_DATA, 'EXPORT_DATA', '数据导出消息常量存在');
 eq(f.MSG.IMPORT_DATA, 'IMPORT_DATA', '数据导入消息常量存在');
 eq(f.MSG.ADD_WATCH_LATER, 'ADD_WATCH_LATER', '稍后再看消息常量存在');
+eq(f.MSG.REMOVE_WATCH_LATER, 'REMOVE_WATCH_LATER', '移出稍后再看消息常量存在');
 eq(f.customSyncDaysFor({ customSyncDays: 7 }), '7', '自定义同步天数');
 eq(f.customSyncDaysFor({ customSyncDays: 0 }), '1', '自定义同步天数下限');
 eq(f.customSyncDaysFor({ customSyncDays: 999 }), '365', '自定义同步天数上限');

@@ -170,12 +170,11 @@
 }
 .dsh-cover-wrap:hover .dsh-watch-later,
 .dsh-watch-later:focus-visible,
-.dsh-watch-later-pending,
-.dsh-watch-later-done { opacity: 1 !important; }
+.dsh-watch-later-pending { opacity: 1 !important; }
 .dsh-watch-later:hover { background: rgba(33, 33, 33, .95) !important; }
 .dsh-watch-later svg { display: block !important; width: 20px !important; height: 20px !important; fill: currentColor !important; }
 .dsh-watch-later-pending { cursor: wait !important; opacity: .65 !important; }
-.dsh-watch-later-done { background: #00a1d6 !important; cursor: default !important; }
+.dsh-watch-later-done { background: #00a1d6 !important; cursor: pointer !important; }
 .dsh-item-invalid .dsh-watch-later { display: none !important; }
 .dsh-meta { flex: 1 !important; min-width: 0 !important; }
 .dsh-title {
