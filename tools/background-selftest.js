@@ -185,11 +185,11 @@ function media(id, title) {
     assert(result.ok && api.mem.meta.mid === 77, '可移植备份没有沿用当前账号');
   });
 
-  await test('同步角标只设置 SYNC 并可清空', async () => {
+  await test('同步角标只设置圆形箭头并可清空', async () => {
     badgeTexts.length = 0;
     await api.setSyncBadge(true);
     await api.setSyncBadge(false);
-    assert(JSON.stringify(badgeTexts) === JSON.stringify(['SYNC', '']), '角标内容或清理行为错误');
+    assert(JSON.stringify(badgeTexts) === JSON.stringify(['↻', '']), '角标内容或清理行为错误');
   });
 
   await test('稍后再看校验 aid 并转发 B 站官方接口结果', async () => {

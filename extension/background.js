@@ -67,7 +67,7 @@ async function setSyncBadge(active) {
     if (active && chrome.action.setBadgeBackgroundColor) {
       await chrome.action.setBadgeBackgroundColor({ color: '#00A1D6' });
     }
-    await chrome.action.setBadgeText({ text: active ? 'SYNC' : '' });
+    await chrome.action.setBadgeText({ text: active ? '↻' : '' });
   } catch (e) { /* 旧环境或测试桩不支持时忽略 */ }
 }
 
