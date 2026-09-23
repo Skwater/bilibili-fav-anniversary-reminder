@@ -208,6 +208,65 @@ function msg(opts) {
   return new Promise(resolve => chrome.runtime.sendMessage(opts, r => resolve(r || null)));
 }
 
+function setDataStatus(text, isError) {
+  const el = $('dataStatus');
+  el.textContent = text || '';
+  el.classList.toggle('error', !!isError);
+}
+
+function downloadJson(data, filename) {
+  const blob = new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function backupFilename(prefix) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `${prefix}-${stamp}.json`;
+}
+
+async function importBackupFile(file) {
+  if (!file) return;
+  if (file.size > 50 * 1024 * 1024) {
+    setDataStatus('导入失败：文件超过 50 MB。', true);
+    return;
+  }
+  let backup;
+  try {
+    backup = JSON.parse(await file.text());
+  } catch (e) {
+    setDataStatus('导入失败：JSON 格式无效。', true);
+    return;
+  }
+
+  setDataStatus('正在校验备份…', false);
+  let result = await msg({ type: MSG.IMPORT_DATA, backup, forceAccount: false });
+  if (result && result.accountMismatch) {
+    const proceed = confirm(
+      `备份属于 UID ${result.backupMid}，当前本地数据属于 UID ${result.currentMid}。\n\n` +
+      `选择“确定”将覆盖当前本地数据（${result.folders} 个收藏夹、${result.items} 条投稿）；` +
+      '选择“取消”则不做任何修改。'
+    );
+    if (!proceed) {
+      setDataStatus('已取消导入，现有数据未修改。', false);
+      return;
+    }
+    result = await msg({ type: MSG.IMPORT_DATA, backup, forceAccount: true });
+  }
+  if (!result || !result.ok) {
+    setDataStatus('导入失败：' + ((result && result.error) || '扩展后台没有响应'), true);
+    return;
+  }
+  setDataStatus(`导入完成：${result.folders} 个收藏夹、${result.items} 条投稿。`, false);
+  await refreshAll();
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   await refreshAll();
 
@@ -285,6 +344,36 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('btnForce').addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: MSG.DEBUG_FORCE }, r => { if (r && r.v) renderView(r); });
   });
+
+  $('btnExportData').addEventListener('click', async () => {
+    setDataStatus('正在生成备份…', false);
+    const includeAccount = $('optExportAccount').checked;
+    const r = await msg({ type: MSG.EXPORT_DATA, includeAccount });
+    if (!r || !r.ok || !r.backup) {
+      setDataStatus('导出失败：' + ((r && r.error) || '扩展后台没有响应'), true);
+      return;
+    }
+    downloadJson(r.backup, backupFilename('bilibili-fav-anniversary-reminder-backup'));
+    setDataStatus(`已导出 ${r.backup.counts.folders} 个收藏夹、${r.backup.counts.items} 条投稿` +
+      (includeAccount && r.backup.account ? `（包含 UID ${r.backup.account.mid}）` : '（不含账号信息）') + '。', false);
+  });
+
+  $('btnExportDiagnostics').addEventListener('click', async () => {
+    setDataStatus('正在生成脱敏诊断…', false);
+    const r = await msg({ type: MSG.EXPORT_DIAGNOSTICS });
+    if (!r || !r.ok || !r.diagnostics) {
+      setDataStatus('导出失败：' + ((r && r.error) || '扩展后台没有响应'), true);
+      return;
+    }
+    downloadJson(r.diagnostics, backupFilename('bilibili-fav-anniversary-reminder-diagnostics'));
+    setDataStatus('脱敏诊断已导出，不包含 UID、标题、封面或收藏夹 ID。', false);
+  });
+
+  $('btnImportData').addEventListener('click', () => {
+    $('fileImportData').value = '';
+    $('fileImportData').click();
+  });
+  $('fileImportData').addEventListener('change', e => importBackupFile(e.target.files && e.target.files[0]));
 
   $('btnClear').addEventListener('click', async () => {
     if (!confirm('确定清空本地数据？将删除收藏夹列表、条目缓存、同步状态与设置。')) return;

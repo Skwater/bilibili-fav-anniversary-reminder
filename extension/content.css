@@ -137,14 +137,46 @@
 .dsh-item-invalid { opacity: 0.6 !important; cursor: default !important; }
 .dsh-item-invalid:hover { background: transparent !important; }
 
+.dsh-cover-wrap {
+  width: 96px !important;
+  height: 60px !important;
+  position: relative !important;
+  flex: none !important;
+}
 .dsh-cover {
   width: 96px !important;
   height: 60px !important;
   object-fit: cover !important;
   border-radius: 4px !important;
   background: #f1f2f3 !important;
-  flex: none !important;
+  display: block !important;
 }
+.dsh-watch-later {
+  position: absolute !important;
+  top: 4px !important;
+  right: 4px !important;
+  width: 28px !important;
+  height: 28px !important;
+  padding: 4px !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: rgba(33, 33, 33, .8) !important;
+  color: #fff !important;
+  cursor: pointer !important;
+  opacity: 0 !important;
+  transition: opacity .16s ease, background .16s ease !important;
+  z-index: 1 !important;
+}
+.dsh-cover-wrap:hover .dsh-watch-later,
+.dsh-watch-later:focus-visible,
+.dsh-watch-later-pending,
+.dsh-watch-later-done { opacity: 1 !important; }
+.dsh-watch-later:hover { background: rgba(33, 33, 33, .95) !important; }
+.dsh-watch-later svg { display: block !important; width: 20px !important; height: 20px !important; fill: currentColor !important; }
+.dsh-watch-later-pending { cursor: wait !important; opacity: .65 !important; }
+.dsh-watch-later-done { background: #00a1d6 !important; cursor: default !important; }
+.dsh-item-invalid .dsh-watch-later { display: none !important; }
 .dsh-meta { flex: 1 !important; min-width: 0 !important; }
 .dsh-title {
   font-size: 14px !important;

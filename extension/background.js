@@ -60,6 +60,17 @@ function schedulePushView() {
 
 function setFlow(note) { flowNote = note; }
 
+/* 仅在真正同步运行时显示一个内置 action 角标；不承担命中数或异常提示。 */
+async function setSyncBadge(active) {
+  if (!chrome.action || !chrome.action.setBadgeText) return;
+  try {
+    if (active && chrome.action.setBadgeBackgroundColor) {
+      await chrome.action.setBadgeBackgroundColor({ color: '#00A1D6' });
+    }
+    await chrome.action.setBadgeText({ text: active ? 'SYNC' : '' });
+  } catch (e) { /* 旧环境或测试桩不支持时忽略 */ }
+}
+
 /* 设置页可配置的时长（毫秒）：读取 settings，异常/过小回退默认值 */
 function settingMs(key, fallback) {
   const v = Number(mem.settings && mem.settings[key]);
@@ -209,6 +220,168 @@ async function resetAllData() {
   pauseReason = '';
   flowCtx = null;
   setFlow('本地数据已清空');
+  await setSyncBadge(false);
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function backupMeta(includeAccount) {
+  const meta = cloneJson(mem.meta || {});
+  // 这些字段只描述当前运行现场，恢复后继续使用可能造成错误续传。
+  delete meta.resumeAt;
+  delete meta.resumeReason;
+  delete meta.pendingFoldersOnly;
+  delete meta.accountChangedAt;
+  delete meta.firstSetupReason;
+  if (!includeAccount) delete meta.mid;
+  return meta;
+}
+
+function createDataBackup(includeAccount) {
+  const withAccount = !!includeAccount;
+  const folders = cloneJson(mem.folders || []);
+  const items = cloneJson(mem.items || {});
+  return {
+    format: CFG.BACKUP_FORMAT,
+    formatVersion: CFG.BACKUP_VERSION,
+    exportedAt: new Date().toISOString(),
+    extensionVersion: chrome.runtime.getManifest ? chrome.runtime.getManifest().version : '',
+    account: withAccount && Number(mem.meta.mid) > 0 ? { mid: Number(mem.meta.mid) } : null,
+    counts: { folders: folders.length, items: Object.keys(items).length },
+    data: {
+      meta: backupMeta(withAccount),
+      folders,
+      items,
+      settings: cloneJson(mem.settings || CFG.DEFAULT_SETTINGS)
+    }
+  };
+}
+
+function createDiagnosticExport() {
+  const sourceCounts = { created: 0, collected: 0 };
+  let readable = 0;
+  let enabled = 0;
+  for (const folder of mem.folders || []) {
+    const source = folder.source === 'collected' ? 'collected' : 'created';
+    sourceCounts[source]++;
+    if (folder.readable !== false) readable++;
+    if (folder.enabled !== false) enabled++;
+  }
+  return {
+    format: 'bilibili-fav-anniversary-reminder-diagnostics',
+    formatVersion: 1,
+    exportedAt: new Date().toISOString(),
+    extensionVersion: chrome.runtime.getManifest ? chrome.runtime.getManifest().version : '',
+    accountIncluded: false,
+    summary: {
+      folders: mem.folders.length,
+      enabledFolders: enabled,
+      readableFolders: readable,
+      folderSources: sourceCounts,
+      items: Object.keys(mem.items || {}).length,
+      syncedOnce: !!mem.meta.syncedOnce,
+      hasIncompleteSession: !!mem.syncSession,
+      syncing: !!(refreshBusy || flowCtx)
+    },
+    settings: cloneJson(mem.settings || CFG.DEFAULT_SETTINGS)
+  };
+}
+
+function validateDataBackup(backup) {
+  if (!backup || typeof backup !== 'object') return { ok: false, error: '备份不是有效对象' };
+  if (backup.format !== CFG.BACKUP_FORMAT) return { ok: false, error: '不是哔哩朝花夕拾备份文件' };
+  if (backup.formatVersion !== CFG.BACKUP_VERSION) {
+    return { ok: false, error: `不支持的备份版本：${backup.formatVersion}` };
+  }
+  if (typeof backup.extensionVersion !== 'string' ||
+      !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(backup.extensionVersion)) {
+    return { ok: false, error: '备份缺少有效的扩展版本信息' };
+  }
+  const data = backup.data;
+  if (!data || typeof data !== 'object' || !Array.isArray(data.folders) ||
+      !data.items || typeof data.items !== 'object' || Array.isArray(data.items) ||
+      !data.meta || typeof data.meta !== 'object' || Array.isArray(data.meta) ||
+      !data.settings || typeof data.settings !== 'object' || Array.isArray(data.settings)) {
+    return { ok: false, error: '备份数据结构不完整' };
+  }
+  const counts = backup.counts;
+  const actualFolders = data.folders.length;
+  const actualItems = Object.keys(data.items).length;
+  if (!counts || Number(counts.folders) !== actualFolders || Number(counts.items) !== actualItems) {
+    return { ok: false, error: '备份数据量校验失败' };
+  }
+  const backupMid = Number(backup.account && backup.account.mid) || 0;
+  if (backup.account != null && !backupMid) return { ok: false, error: '备份账号信息无效' };
+  return {
+    ok: true,
+    backupMid,
+    extensionVersion: backup.extensionVersion,
+    folders: actualFolders,
+    items: actualItems
+  };
+}
+
+async function importDataBackup(backup, forceAccount) {
+  if (refreshBusy) return { ok: false, busy: true, error: '同步进行中，请先完成或终止同步' };
+  const checked = validateDataBackup(backup);
+  if (!checked.ok) return checked;
+  const currentMid = Number(mem.meta.mid) || 0;
+  if (checked.backupMid && currentMid && checked.backupMid !== currentMid && !forceAccount) {
+    return {
+      ok: false,
+      accountMismatch: true,
+      currentMid,
+      backupMid: checked.backupMid,
+      folders: checked.folders,
+      items: checked.items
+    };
+  }
+
+  dataEpoch++;
+  folderListPromise = null;
+  try { await chrome.alarms.clear(RESUME_ALARM); } catch (e) {}
+  const data = cloneJson(backup.data);
+  const nextMeta = data.meta || {};
+  delete nextMeta.resumeAt;
+  delete nextMeta.resumeReason;
+  delete nextMeta.pendingFoldersOnly;
+  delete nextMeta.accountChangedAt;
+  delete nextMeta.firstSetupReason;
+  // 未导出账号信息的备份属于“可移植备份”，恢复到当前缓存账号。
+  if (checked.backupMid) nextMeta.mid = checked.backupMid;
+  else if (currentMid) nextMeta.mid = currentMid;
+  else delete nextMeta.mid;
+
+  mem.meta = nextMeta;
+  mem.folders = data.folders;
+  mem.items = data.items;
+  mem.settings = Object.assign({}, CFG.DEFAULT_SETTINGS, data.settings || {});
+  mem.syncCursor = null;
+  mem.syncSession = null;
+  clearPendingRequests();
+  pendingAccountSwitch = null;
+  loginInfo.mid = 0;
+  loginInfo.ok = false;
+  loginInfo.error = '';
+  loginInfo.checkedAt = 0;
+  loginInfo.failedAt = 0;
+  rateUntil = 0;
+  pauseReason = '';
+  flowCtx = null;
+  cancelSync = false;
+  await storageSet({
+    [CFG.KEY_META]: mem.meta,
+    [CFG.KEY_FOLDERS]: mem.folders,
+    [CFG.KEY_ITEMS]: mem.items,
+    [CFG.KEY_SETTINGS]: mem.settings,
+    [CFG.KEY_SYNC]: syncStateValue()
+  });
+  await setSyncBadge(false);
+  setFlow(`已导入 ${checked.folders} 个收藏夹、${checked.items} 条投稿`);
+  pushView();
+  return { ok: true, folders: checked.folders, items: checked.items, accountMid: mem.meta.mid || 0 };
 }
 
 /* 换号只清“账号资源”，完整保留用户设置。meta.mid 表示当前缓存归属，
@@ -326,6 +499,38 @@ function mainFetch(url, timeoutMs) {
     .finally(() => clearTimeout(timer));
 }
 
+/* 该函数会被序列化注入 B 站页面 MAIN world：仅在用户点击时临时读取
+   bili_jct 作为官方接口要求的 CSRF 参数，不把 Cookie 返回给扩展或写入存储。 */
+function mainAddWatchLater(aid, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs || 20000);
+  const match = document.cookie.match(/(?:^|;\s*)bili_jct=([^;]+)/);
+  if (!match) {
+    clearTimeout(timer);
+    return Promise.resolve({ ok: false, error: 'NO_CSRF' });
+  }
+  const body = new URLSearchParams({ aid: String(aid), csrf: decodeURIComponent(match[1]) });
+  return fetch('https://api.bilibili.com/x/v2/history/toview/add', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+    body,
+    signal: controller.signal
+  }).then(async r => {
+    let json = null;
+    try { json = await r.json(); } catch (e) { json = null; }
+    return {
+      ok: r.ok && !!json && json.code === 0,
+      status: r.status,
+      code: json && json.code,
+      message: (json && json.message) || ''
+    };
+  }).catch(err => ({
+    ok: false,
+    error: err && err.name === 'AbortError' ? 'TIMEOUT' : String((err && err.message) || err)
+  })).finally(() => clearTimeout(timer));
+}
+
 function contentProxyFetch(url) {
   return new Promise(resolve => {
     const tabId = latestHomeTabId;
@@ -378,6 +583,33 @@ async function proxyFetch(url) {
     }
   }
   return { ok: false, error: 'PROXY_REBIND_FAILED' };
+}
+
+async function addToWatchLater(aid) {
+  const numericAid = Number(aid);
+  if (!Number.isSafeInteger(numericAid) || numericAid <= 0) {
+    return { ok: false, error: 'INVALID_AID', message: '视频编号无效' };
+  }
+  const tab = await findHomeTab();
+  if (!tab) return { ok: false, error: 'NO_BILI_TAB', message: '请先打开并登录哔哩哔哩' };
+  latestHomeTabId = tab.id;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'MAIN',
+      func: mainAddWatchLater,
+      args: [numericAid, CFG.PROXY_TIMEOUT_MS]
+    });
+    const result = results && results[0] && results[0].result;
+    if (!result) return { ok: false, error: 'EMPTY_INJECT', message: 'B 站未返回结果' };
+    if (result.ok) return { ok: true };
+    if (result.error === 'NO_CSRF' || result.code === -101) {
+      return { ok: false, error: 'NOT_LOGGED_IN', message: '请先登录哔哩哔哩' };
+    }
+    return Object.assign({}, result, { message: result.message || '加入稍后再看失败' });
+  } catch (e) {
+    return { ok: false, error: 'INJECT_FAILED', message: String((e && e.message) || e) };
+  }
 }
 
 /* ---------------- 登录态 ----------------
@@ -1170,6 +1402,7 @@ async function runRefresh(verifiedMid) {
   if (mem.meta.resumeAt) await clearHold();
   if (refreshBusy) return;
   refreshBusy = true;
+  await setSyncBadge(true);
   // 新会话复位终止标志：空闲期点过“终止”只清了冷却/游标，不该让下一次手动同步
   // 一开始就被残留的 cancelSync 立刻 STOP（曾导致终止后需点两次才开始）。
   cancelSync = false;
@@ -1357,6 +1590,7 @@ async function runRefresh(verifiedMid) {
   } finally {
     refreshBusy = false;
     flowCtx = null;
+    await setSyncBadge(false);
     if (clearAfterSync) {
       clearAfterSync = false;
       await resetAllData();
@@ -1697,6 +1931,15 @@ async function handle(msg, sender) {
       return { dateKey: date, hits: hitsForDateKey(date) };
     }
 
+    case MSG.EXPORT_DATA:
+      return { ok: true, backup: createDataBackup(!!msg.includeAccount) };
+
+    case MSG.EXPORT_DIAGNOSTICS:
+      return { ok: true, diagnostics: createDiagnosticExport() };
+
+    case MSG.IMPORT_DATA:
+      return importDataBackup(msg.backup, !!msg.forceAccount);
+
     case MSG.CHECK_LOGIN: {
       // 手动重试登录检查：跳过 TTL 立即复查（“无法连接”卡上的“重试”按钮）
       await refreshLogin(true);
@@ -1900,6 +2143,9 @@ async function handle(msg, sender) {
       }
       return { ok: true };
     }
+
+    case MSG.ADD_WATCH_LATER:
+      return addToWatchLater(msg.aid);
 
     case MSG.LOG:
       log('[content]', msg.level || 'info', msg.text || '');

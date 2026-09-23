@@ -47,6 +47,9 @@
     .fgroup-body { margin: 0; }
     input.num3 { width: 56px; border: 1px solid #c9cdd2; border-radius: 6px; padding: 4px 6px; font-size: 13px; }
     .error { color: #d54949; }
+    .data-actions { flex-wrap: wrap; }
+    .data-actions label { flex: 1 1 100%; }
+    .data-status { min-height: 18px; line-height: 1.5; }
 
     /* 高级设置（折叠，默认收起） */
     details.advcard { background: #fff; border: 1px solid #e3e5e7; border-radius: 10px; margin: 14px 0; overflow: hidden; }
@@ -187,6 +190,14 @@
 
       <div class="adv-group">
         <div class="adv-title">数据管理</div>
+        <div class="row data-actions">
+          <label><input type="checkbox" id="optExportAccount" checked /> 导出时包含账号 UID</label>
+          <button id="btnExportData">导出 JSON 备份</button>
+          <button id="btnImportData">导入 JSON 备份</button>
+          <button id="btnExportDiagnostics">导出脱敏诊断</button>
+          <input type="file" id="fileImportData" accept="application/json,.json" hidden />
+        </div>
+        <div id="dataStatus" class="muted data-status"></div>
         <div class="row">
           <button id="btnClear" class="danger">清空本地数据（收藏夹/条目/同步状态）</button>
           <span class="muted">设置与模拟日期也会被重置</span>

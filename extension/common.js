@@ -15,6 +15,9 @@ const CFG = {
   KEY_SETTINGS: 'settings',
   KEY_SYNC: 'sync',
 
+  BACKUP_FORMAT: 'bilibili-fav-anniversary-reminder-backup',
+  BACKUP_VERSION: 1,
+
   DEFAULT_SETTINGS: {
     hideInvalid: true,   // 默认不提醒/不展示失效视频
     feb29: '0228',       // 2/29 平年归并：'0228' 或 '0301'
@@ -71,6 +74,10 @@ const MSG = {
   DEBUG_FORCE: 'DEBUG_FORCE',       // 调试：清除当日去重标记并重弹
   MARK_FULLSYNC_REMINDED: 'MARK_FULLSYNC_REMINDED', // 记录“长期未全量”提醒已展示
   SET_FOLDER_ENABLED: 'SET_FOLDER_ENABLED', // 设置收藏夹开关 {ids, enabled}
+  EXPORT_DATA: 'EXPORT_DATA',       // 导出本地备份 {includeAccount:boolean}
+  EXPORT_DIAGNOSTICS: 'EXPORT_DIAGNOSTICS', // 导出脱敏诊断信息
+  IMPORT_DATA: 'IMPORT_DATA',       // 导入本地备份 {backup, forceAccount:boolean}
+  ADD_WATCH_LATER: 'ADD_WATCH_LATER', // 使用 B 站官方接口加入稍后再看 {aid:number}
   CLEAR_DATA: 'CLEAR_DATA',         // 终止同步并清空全部本地数据
   LOG: 'LOG',
   /* background -> content */

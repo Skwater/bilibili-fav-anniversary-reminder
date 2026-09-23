@@ -65,6 +65,49 @@ function openVideo(bvid) {
   safeSend({ type: MSG.OPEN_VIDEO, bvid });
 }
 
+const WATCH_LATER_PATHS = [
+  'M10 3.1248A6.875 6.875 0 1 0 14.8606 14.862a.625.625 0 1 1 .8837.884A8.125 8.125 0 1 1 18.0755 10.902a.625.625 0 0 1-1.2425-.1374A6.875 6.875 0 0 0 10 3.1248Z',
+  'M15.3914 9.1412a.625.625 0 0 1 .8839 0L17.5 10.3659l1.2248-1.2247a.625.625 0 0 1 .8838.8839l-1.5194 1.5193a.8333.8333 0 0 1-1.1785 0l-1.5193-1.5193a.625.625 0 0 1 0-.8839Z',
+  'M12.4993 9.2784a.8333.8333 0 0 1 0 1.4429l-3.1254 1.8045a.8333.8333 0 0 1-1.2496-.7215V8.1954a.8333.8333 0 0 1 1.2496-.7215l3.1254 1.8045Z'
+];
+
+function watchLaterButton(h) {
+  const button = el('button', 'dsh-watch-later');
+  button.type = 'button';
+  button.title = '添加至稍后再看';
+  button.setAttribute('aria-label', '添加至稍后再看');
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 20 20');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const data of WATCH_LATER_PATHS) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', data);
+    svg.appendChild(path);
+  }
+  button.appendChild(svg);
+  button.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (button.disabled) return;
+    button.disabled = true;
+    button.classList.add('dsh-watch-later-pending');
+    button.title = '正在添加…';
+    safeSend({ type: MSG.ADD_WATCH_LATER, aid: h.aid }, resp => {
+      button.classList.remove('dsh-watch-later-pending');
+      if (resp && resp.ok) {
+        button.classList.add('dsh-watch-later-done');
+        button.title = '已加入稍后再看';
+        button.setAttribute('aria-label', '已加入稍后再看');
+      } else {
+        button.disabled = false;
+        button.title = (resp && resp.message) || '添加失败，请重试';
+        button.setAttribute('aria-label', button.title);
+      }
+    });
+  });
+  return button;
+}
+
 function dateAddDays(key, delta) {
   const d = keyToDate(key);
   d.setDate(d.getDate() + delta);
@@ -142,10 +185,13 @@ function hitItem(h) {
   const row = el('div', 'dsh-item' + (h.attr !== 0 ? ' dsh-item-invalid' : ''));
   row.setAttribute('role', 'button');
   row.tabIndex = 0;
+  const cover = el('div', 'dsh-cover-wrap');
   const img = el('img', 'dsh-cover');
   if (h.cover) { img.src = h.cover; img.referrerPolicy = 'no-referrer'; img.loading = 'lazy'; }
   img.addEventListener('error', () => { img.style.visibility = 'hidden'; });
-  row.appendChild(img);
+  cover.appendChild(img);
+  if (h.attr === 0 && h.aid) cover.appendChild(watchLaterButton(h));
+  row.appendChild(cover);
 
   const meta = el('div', 'dsh-meta');
   const t1 = el('div', 'dsh-title', h.title);
@@ -166,7 +212,12 @@ function hitItem(h) {
     openVideo(h.bvid);
   };
   row.addEventListener('click', activate);
-  row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); } });
+  row.addEventListener('keydown', e => {
+    if (e.target === row && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault();
+      activate();
+    }
+  });
   return row;
 }
 

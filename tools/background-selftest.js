@@ -13,6 +13,7 @@ let executeCount = 0;
 let tabQueryResult = [{ id: 1, url: 'https://www.bilibili.com/' }];
 const writes = [];
 const store = {};
+const badgeTexts = [];
 
 const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const chrome = {
@@ -51,7 +52,14 @@ const chrome = {
     async create() {}, async clear() { return true; },
     onAlarm: { addListener() {} }
   },
-  runtime: { onMessage: { addListener() {} } }
+  action: {
+    async setBadgeText(opts) { badgeTexts.push(opts.text); },
+    async setBadgeBackgroundColor() {}
+  },
+  runtime: {
+    getManifest() { return { version: '0.2.1' }; },
+    onMessage: { addListener() {} }
+  }
 };
 
 const context = vm.createContext({
@@ -63,6 +71,7 @@ globalThis.__bgtest = {
   CFG, mem, loginInfo,
   refreshLogin, ensureFolderList, syncOneFolder, runSyncPass, runRefresh, handle, buildView,
   fingerprintIds, folderAidSet, resetAllData, resetForAccountSwitch, hitsForDateKey, computeCalendarYear, customSyncDue,
+  createDataBackup, createDiagnosticExport, validateDataBackup, importDataBackup, setSyncBadge, addToWatchLater,
   setBurstLimit(value) { burstLimit = value; },
   clearRate() { rateUntil = 0; pauseReason = ''; delete mem.meta.resumeAt; delete mem.meta.resumeReason; },
   reset() {
@@ -127,6 +136,70 @@ function media(id, title) {
 }
 
 (async () => {
+  // 等待 background.js 末尾的异步预热完成，避免首个用例与 ensureLoaded 竞态。
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  await test('JSON 备份可选择是否包含账号信息', async () => {
+    api.mem.meta = { mid: 42, syncedOnce: true, resumeAt: Date.now() + 5000 };
+    api.mem.folders = [{ mediaId: 1, title: '夹', enabled: true }];
+    api.mem.items = { BV1: { bvid: 'BV1', folderIds: [1] } };
+    const withAccount = api.createDataBackup(true);
+    const portable = api.createDataBackup(false);
+    assert(withAccount.account.mid === 42 && withAccount.data.meta.mid === 42, '含账号备份缺少 UID');
+    assert(portable.account === null && portable.data.meta.mid == null, '无账号备份泄露 UID');
+    assert(withAccount.counts.folders === 1 && withAccount.counts.items === 1, '备份数据量错误');
+    assert(withAccount.data.meta.resumeAt == null, '备份包含瞬时冷却状态');
+  });
+
+  await test('JSON 备份校验数据量并拦截跨账号导入', async () => {
+    api.mem.meta = { mid: 42, syncedOnce: true };
+    api.mem.folders = [{ mediaId: 1, title: '原夹', enabled: true }];
+    api.mem.items = { BV1: { bvid: 'BV1', folderIds: [1] } };
+    const backup = api.createDataBackup(true);
+    backup.account.mid = 99;
+    backup.data.meta.mid = 99;
+    const mismatch = await api.importDataBackup(backup, false);
+    assert(mismatch.accountMismatch && mismatch.currentMid === 42 && mismatch.backupMid === 99,
+      '跨账号导入未要求覆盖确认');
+    assert(api.mem.meta.mid === 42, '确认前修改了现有账号：' + api.mem.meta.mid);
+    assert(api.mem.folders[0] && api.mem.folders[0].title === '原夹',
+      '确认前修改了现有收藏夹：' + JSON.stringify(api.mem.folders));
+    const forced = await api.importDataBackup(backup, true);
+    assert(forced.ok && api.mem.meta.mid === 99, '确认覆盖后未导入备份账号');
+
+    const broken = api.createDataBackup(true);
+    broken.counts.items++;
+    assert(!api.validateDataBackup(broken).ok, '数据量不一致仍通过校验');
+    const noVersion = api.createDataBackup(true);
+    delete noVersion.extensionVersion;
+    assert(!api.validateDataBackup(noVersion).ok, '缺少扩展版本仍通过校验');
+  });
+
+  await test('无账号备份导入时沿用当前账号归属', async () => {
+    api.mem.meta = { mid: 42, syncedOnce: true };
+    api.mem.folders = [{ mediaId: 1, title: '夹', enabled: true }];
+    api.mem.items = { BV1: { bvid: 'BV1', folderIds: [1] } };
+    const backup = api.createDataBackup(false);
+    api.mem.meta = { mid: 77, syncedOnce: true };
+    const result = await api.importDataBackup(backup, false);
+    assert(result.ok && api.mem.meta.mid === 77, '可移植备份没有沿用当前账号');
+  });
+
+  await test('同步角标只设置 SYNC 并可清空', async () => {
+    badgeTexts.length = 0;
+    await api.setSyncBadge(true);
+    await api.setSyncBadge(false);
+    assert(JSON.stringify(badgeTexts) === JSON.stringify(['SYNC', '']), '角标内容或清理行为错误');
+  });
+
+  await test('稍后再看校验 aid 并转发 B 站官方接口结果', async () => {
+    const invalid = await api.addToWatchLater('not-an-aid');
+    assert(!invalid.ok && invalid.error === 'INVALID_AID', '非法 aid 未被拦截');
+    fetchHandler = async aid => ({ ok: Number(aid) === 123 });
+    const added = await api.addToWatchLater(123);
+    assert(added.ok && executeCount === 1, '稍后再看未通过页面主世界执行');
+  });
+
   await test('登录检查 single-flight：并发调用只请求一次', async () => {
     fetchHandler = async () => {
       await new Promise(resolve => setTimeout(resolve, 20));
