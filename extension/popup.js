@@ -83,7 +83,7 @@ function appendHit(wrap, h) {
   const m = document.createElement('div'); m.className = 'm';
   const t = document.createElement('div'); t.className = 't'; t.textContent = h.title; m.appendChild(t);
   const s = document.createElement('div'); s.className = 's';
-  s.textContent = (h.upperName ? h.upperName + ' · ' : '') + h.years + ' 年前（' + h.pubYear + ' 年发布）';
+  s.textContent = (h.upperName ? h.upperName + ' · ' : '') + '投稿发布于 ' + h.years + ' 年前的今天';
   m.appendChild(s);
   const s2 = document.createElement('div'); s2.className = 's2';
   s2.textContent = '来源：' + (h.folderName || '未命名');
@@ -113,7 +113,7 @@ function render(v) {
   if (firstUse) {
     $('welcomeText').innerHTML = v.firstSetupReason === 'accountChanged'
       ? '检测到 B 站账号已切换。<br />旧账号收藏数据已清理，扩展设置已保留。<br />请进入哔哩哔哩重新选择收藏夹。'
-      : '欢迎使用！<br />同步收藏夹后，每次打开哔哩哔哩首页，<br />就能看到「历史上的今天」收藏提醒。';
+      : '欢迎使用！<br />同步收藏夹后，每次打开哔哩哔哩首页，<br />就能看到「投稿发布于 X 年前的今天」提醒。';
     return;
   }
 
@@ -139,7 +139,7 @@ function render(v) {
   if (v.loginState === 'no') {
     renderHitList(wrap, [], '未登录哔哩哔哩，无法读取收藏夹。');
   } else {
-    renderHitList(wrap, hits, v.simulated ? '该模拟日期下没有命中' : '今天没有“历史上的今天”投稿');
+    renderHitList(wrap, hits, v.simulated ? '该模拟日期下没有命中' : '今天没有符合条件的历史投稿');
   }
 
   // 概览

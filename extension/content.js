@@ -198,7 +198,7 @@ function hitItem(h) {
   meta.appendChild(t1);
   const sub1 = [];
   if (h.upperName) sub1.push(h.upperName);
-  sub1.push(`${h.years} 年前的今天`);
+  sub1.push(`投稿发布于 ${h.years} 年前的今天`);
   meta.appendChild(el('div', 'dsh-sub', sub1.join(' · ')));
   const sub2 = [];
   sub2.push(`发布于 ${h.pubYear} 年`);
@@ -380,7 +380,7 @@ function render(v) {
   if (hits.length) {
     const years = [...new Set(hits.map(h => h.years))].sort((a, b) => b - a);
     const span = years.length > 1 ? `（最久 ${years[0]} 年前）` : '';
-    ttlWrap.appendChild(el('div', 'dsh-title-main', `📅 ${years[0]} 年前的今天${span}`));
+    ttlWrap.appendChild(el('div', 'dsh-title-main', `📅 投稿发布于 ${years[0]} 年前的今天${span}`));
     ttlWrap.appendChild(el('div', 'dsh-title-sub',
       `${dateKey} · 收藏夹里 ${v.folders.enabled} 个夹 / ${hits.length} 条命中` +
       (v.simulated ? ' · 模拟日期' : '')));
