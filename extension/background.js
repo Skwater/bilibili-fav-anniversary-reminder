@@ -480,7 +480,7 @@ function customSyncDue(nowMs) {
  * 注意：不能直接在 content script 隔离世界里 fetch —— Chrome 对隔离世界的
  * 跨源凭据请求与页面主世界行为不同（主世界 = 你在控制台手动验证 CORS 的环境）。
  * 因此通过 chrome.scripting 注入到页面 MAIN world 执行，与 B 站自身请求一致。
- * 扩展自身不读取、不存储任何 Cookie，凭据由浏览器自动携带。
+ * 常规取数请求的凭据由浏览器自动携带，扩展不保存 Cookie。
  */
 /* 该函数会被序列化注入 MAIN world 执行，必须自包含 */
 function mainFetch(url, timeoutMs) {
