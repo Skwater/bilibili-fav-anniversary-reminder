@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "哔哩朝花夕拾",
-  "version": "0.2.1",
+  "version": "1.0.0",
   "description": "打开哔哩哔哩首页时，提醒你收藏夹中有哪些投稿发布于 X 年前的今天",
   "minimum_chrome_version": "116",
   "permissions": [

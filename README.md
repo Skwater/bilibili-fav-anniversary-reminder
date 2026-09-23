@@ -8,6 +8,8 @@
 
 > 🛒 **一键安装**：[Chrome 应用商店 · 哔哩朝花夕拾](https://chromewebstore.google.com/detail/kgamlldkccpldahaohnbnnfdnegphppe)（商店版本以页面显示为准）
 
+> 当前正式版：**v1.0.0**
+
 打开 `https://www.bilibili.com/` 时，插件按你收藏夹内**视频投稿的发布时间**匹配今天的月日；命中时提醒你“投稿发布于 X 年前的今天”，点击即可回到视频。
 
 ![哔哩朝花夕拾 · 今日回顾](assets/screenshot-1.png)

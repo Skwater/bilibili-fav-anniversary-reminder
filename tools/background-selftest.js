@@ -57,7 +57,7 @@ const chrome = {
     async setBadgeBackgroundColor() {}
   },
   runtime: {
-    getManifest() { return { version: '0.2.1' }; },
+    getManifest() { return { version: '1.0.0' }; },
     onMessage: { addListener() {} }
   }
 };
