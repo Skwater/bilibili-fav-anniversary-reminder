@@ -71,7 +71,7 @@ const expose = `
 globalThis.__bgtest = {
   CFG, mem, loginInfo,
   refreshLogin, ensureFolderList, syncOneFolder, runSyncPass, runRefresh, handle, buildView,
-  fingerprintIds, folderAidSet, resetAllData, resetForAccountSwitch, hitsForDateKey, computeCalendarYear, customSyncDue,
+  fingerprintIds, folderAidSet, resetAllData, resetForAccountSwitch, hitsForDateKey, computeCalendarYear, computeSevenDayReview, customSyncDue,
   createDataBackup, createDiagnosticExport, validateDataBackup, importDataBackup, setSyncBadge, addToWatchLater, removeFromWatchLater,
   refreshWatchLater, decorateWatchLaterHits,
   setBurstLimit(value) { burstLimit = value; },
@@ -455,6 +455,22 @@ function media(id, title) {
     assert(api.hitsForDateKey('2026-02-28').length === 2, '平年日期详情未包含闰日投稿');
     const leap = api.computeCalendarYear(2024);
     assert(leap.days['2024-02-28'] === 1 && leap.days['2024-02-29'] === 1, '闰年没有拆分 2/28 与 2/29');
+  });
+
+  await test('七日回顾按本地日期连续返回今天至前六天并保留空日期', async () => {
+    api.mem.folders = [{ mediaId: 1, title: '夹', enabled: true }];
+    api.mem.items = {
+      BV1: { aid: 1, bvid: 'BV1', type: 2, title: '今天纪念', pubtime: new Date(2020, 8, 27, 12).getTime() / 1000, attr: 0, folderIds: [1] },
+      BV2: { aid: 2, bvid: 'BV2', type: 2, title: '第七天纪念', pubtime: new Date(2019, 8, 21, 12).getTime() / 1000, attr: 0, folderIds: [1] },
+      BV3: { aid: 3, bvid: 'BV3', type: 2, title: '范围之外', pubtime: new Date(2018, 8, 20, 12).getTime() / 1000, attr: 0, folderIds: [1] }
+    };
+    const review = api.computeSevenDayReview(new Date(2026, 8, 27, 23, 59));
+    assert(review.days.length === 7, '没有返回完整七天');
+    assert(review.endKey === '2026-09-27' && review.startKey === '2026-09-21', '日期范围错误');
+    assert(review.days[0].dateKey === '2026-09-27' && review.days[6].dateKey === '2026-09-21', '日期没有从近到远排列');
+    assert(review.days[1].dateKey === '2026-09-26' && review.days[1].hits.length === 0, '空日期被跳过');
+    assert(review.total === 2 && review.days[0].hits[0].title === '今天纪念' && review.days[6].hits[0].title === '第七天纪念',
+      '七日命中或总数错误');
   });
 
   await test('设置页概览分别统计启用条目与全部缓存条目', async () => {

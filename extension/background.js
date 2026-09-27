@@ -1877,6 +1877,27 @@ function hitsForDateKey(dateKey, matchData) {
   return hits;
 }
 
+function computeSevenDayReview(nowDate) {
+  const source = nowDate instanceof Date && !Number.isNaN(nowDate.getTime()) ? nowDate : new Date();
+  const end = new Date(source.getFullYear(), source.getMonth(), source.getDate());
+  const data = buildMatchData();
+  const days = [];
+  let total = 0;
+  for (let offset = 0; offset < 7; offset++) {
+    const date = new Date(end.getFullYear(), end.getMonth(), end.getDate() - offset);
+    const dateKey = dateKeyFromDate(date);
+    const hits = hitsForDateKey(dateKey, data);
+    total += hits.length;
+    days.push({ dateKey, hits });
+  }
+  return {
+    startKey: days[days.length - 1].dateKey,
+    endKey: days[0].dateKey,
+    total,
+    days
+  };
+}
+
 function computeCalendarYear(year) {
   const currentYear = new Date().getFullYear();
   const data = buildMatchData();
@@ -2137,6 +2158,17 @@ async function handle(msg, sender) {
       await refreshLogin(false);
       if (loginInfo.ok) await refreshWatchLater(false);
       return { dateKey: date, hits: decorateWatchLaterHits(hitsForDateKey(date)) };
+    }
+
+    case MSG.GET_SEVEN_DAY_REVIEW: {
+      await refreshLogin(false);
+      if (loginInfo.ok) await refreshWatchLater(false);
+      const review = computeSevenDayReview();
+      review.days = review.days.map(day => ({
+        dateKey: day.dateKey,
+        hits: decorateWatchLaterHits(day.hits)
+      }));
+      return review;
     }
 
     case MSG.EXPORT_DATA:

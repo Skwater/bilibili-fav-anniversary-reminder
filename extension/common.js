@@ -68,6 +68,7 @@ const MSG = {
   GET_VIEW: 'GET_VIEW',             // popup/options 拉取视图
   GET_CALENDAR_YEAR: 'GET_CALENDAR_YEAR', // popup 日历：读取某年每天的本地命中数量
   GET_DATE_HITS: 'GET_DATE_HITS',   // popup 日历：读取指定日期的本地命中列表
+  GET_SEVEN_DAY_REVIEW: 'GET_SEVEN_DAY_REVIEW', // popup 七日回顾：读取今天至前 6 天的命中列表
   SYNC_NOW: 'SYNC_NOW',             // 手动同步 {full:boolean}
   CANCEL_SYNC: 'CANCEL_SYNC',       // 终止当前同步（含取消自动续传）
   REFRESH_FOLDERS: 'REFRESH_FOLDERS', // 仅刷新收藏夹列表（不扫内容）

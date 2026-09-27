@@ -27,6 +27,9 @@ let calendarSummary = null;
 let calendarRequestSeq = 0;
 let calendarDirty = false;
 let calendarCollapsed = false;
+let reviewLoaded = false;
+let reviewRequestSeq = 0;
+let reviewDirty = false;
 
 function pillLogin(v) {
   const p = $('loginPill');
@@ -191,17 +194,89 @@ function localDateKey(year, month, day) {
 }
 
 function setActiveView(next) {
-  activeView = next === 'calendar' ? 'calendar' : 'today';
-  const isCalendar = activeView === 'calendar';
-  const todayPanel = $('todayPanel');
-  const calendarPanel = $('calendarPanel');
-  todayPanel.hidden = isCalendar;
-  calendarPanel.hidden = !isCalendar;
-  $('tabToday').classList.toggle('active', !isCalendar);
-  $('tabCalendar').classList.toggle('active', isCalendar);
-  $('tabToday').setAttribute('aria-selected', String(!isCalendar));
-  $('tabCalendar').setAttribute('aria-selected', String(isCalendar));
-  if (isCalendar && !calendarSummary) loadCalendarYear(calendarYear, true);
+  activeView = next === 'calendar' || next === 'review' ? next : 'today';
+  const views = [
+    { name: 'today', tab: $('tabToday'), panel: $('todayPanel') },
+    { name: 'review', tab: $('tabReview'), panel: $('reviewPanel') },
+    { name: 'calendar', tab: $('tabCalendar'), panel: $('calendarPanel') }
+  ];
+  for (const item of views) {
+    const active = item.name === activeView;
+    item.panel.hidden = !active;
+    item.tab.classList.toggle('active', active);
+    item.tab.setAttribute('aria-selected', String(active));
+  }
+  if (activeView === 'review' && (!reviewLoaded || reviewDirty)) loadSevenDayReview();
+  if (activeView === 'calendar' && !calendarSummary) loadCalendarYear(calendarYear, true);
+}
+
+function reviewDateParts(dateKey) {
+  const parts = String(dateKey || '').split('-').map(Number);
+  return { month: parts[1] || 0, day: parts[2] || 0 };
+}
+
+function renderSevenDayReview(review) {
+  const timeline = $('reviewTimeline');
+  timeline.innerHTML = '';
+  const days = Array.isArray(review.days) ? review.days : [];
+  days.forEach((entry, index) => {
+    const parts = reviewDateParts(entry.dateKey);
+    const hits = Array.isArray(entry.hits) ? entry.hits : [];
+    const section = document.createElement('section');
+    section.className = 'review-day';
+
+    const marker = document.createElement('div');
+    marker.className = 'review-date';
+    marker.setAttribute('aria-label', `${parts.month} 月 ${parts.day} 日`);
+    const day = document.createElement('span');
+    day.className = 'review-date-day';
+    day.textContent = parts.day;
+    const month = document.createElement('span');
+    month.className = 'review-date-month';
+    month.textContent = parts.month + ' 月';
+    marker.append(day, month);
+
+    const content = document.createElement('div');
+    content.className = 'review-day-content';
+    const head = document.createElement('div');
+    head.className = 'review-day-head';
+    const label = document.createElement('span');
+    label.className = 'review-day-label';
+    label.textContent = index === 0 ? '今天' : (index === 1 ? '昨天' : `${index} 天前`);
+    const count = document.createElement('span');
+    count.className = 'review-day-count';
+    count.textContent = `${hits.length} 条`;
+    head.append(label, count);
+    content.appendChild(head);
+    if (hits.length) {
+      for (const hit of hits) appendHit(content, hit);
+    } else {
+      const empty = document.createElement('div');
+      empty.className = 'review-day-empty';
+      empty.textContent = '这一天没有纪念投稿';
+      content.appendChild(empty);
+    }
+    section.append(marker, content);
+    timeline.appendChild(section);
+  });
+
+  const start = reviewDateParts(review.startKey);
+  const end = reviewDateParts(review.endKey);
+  const note = document.createElement('div');
+  note.className = 'review-range-note';
+  note.textContent = `${start.month} 月 ${start.day} 日—${end.month} 月 ${end.day} 日 · 共 ${review.total || 0} 条纪念投稿`;
+  timeline.appendChild(note);
+}
+
+function loadSevenDayReview() {
+  const seq = ++reviewRequestSeq;
+  reviewDirty = false;
+  $('reviewTimeline').innerHTML = '<div class="review-loading">正在读取…</div>';
+  chrome.runtime.sendMessage({ type: MSG.GET_SEVEN_DAY_REVIEW }, review => {
+    if (seq !== reviewRequestSeq || !review || !Array.isArray(review.days)) return;
+    reviewLoaded = true;
+    renderSevenDayReview(review);
+  });
 }
 
 function loadCalendarYear(year, keepSelection) {
@@ -315,7 +390,11 @@ document.addEventListener('DOMContentLoaded', () => {
   $('btnGoStart').addEventListener('click', () => {
     chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
   });
+  $('loginPill').addEventListener('click', () => {
+    chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
+  });
   $('tabToday').addEventListener('click', () => setActiveView('today'));
+  $('tabReview').addEventListener('click', () => setActiveView('review'));
   $('tabCalendar').addEventListener('click', () => setActiveView('calendar'));
   $('calendarPrevMonth').addEventListener('click', () => moveCalendarMonth(-1));
   $('calendarNextMonth').addEventListener('click', () => moveCalendarMonth(1));
@@ -399,7 +478,10 @@ function cooldownText(seconds, reason) {
 let askTimer = null;
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
-  if (changes[CFG.KEY_ITEMS] || changes[CFG.KEY_FOLDERS] || changes[CFG.KEY_SETTINGS]) calendarDirty = true;
+  if (changes[CFG.KEY_ITEMS] || changes[CFG.KEY_FOLDERS] || changes[CFG.KEY_SETTINGS]) {
+    calendarDirty = true;
+    reviewDirty = true;
+  }
   clearTimeout(askTimer);
   askTimer = setTimeout(() => {
     askView();
@@ -408,5 +490,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
       calendarSummary = null;
       if (activeView === 'calendar') loadCalendarYear(calendarYear, true);
     }
+    if (reviewDirty && activeView === 'review') loadSevenDayReview();
   }, 400);
 });

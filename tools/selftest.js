@@ -53,6 +53,7 @@ eq(f.fullSyncItemTotal(syncFolders, 'all', [3]), '1500', '首次向导统计所�
 eq(f.MSG.HOME_OPEN, 'HOME_OPEN', 'MSG 常量存在');
 eq(f.MSG.GET_CALENDAR_YEAR, 'GET_CALENDAR_YEAR', '日历年度消息常量存在');
 eq(f.MSG.GET_DATE_HITS, 'GET_DATE_HITS', '日历日期消息常量存在');
+eq(f.MSG.GET_SEVEN_DAY_REVIEW, 'GET_SEVEN_DAY_REVIEW', '七日回顾消息常量存在');
 eq(f.MSG.EXPORT_DATA, 'EXPORT_DATA', '数据导出消息常量存在');
 eq(f.MSG.IMPORT_DATA, 'IMPORT_DATA', '数据导入消息常量存在');
 eq(f.MSG.ADD_WATCH_LATER, 'ADD_WATCH_LATER', '稍后再看消息常量存在');
