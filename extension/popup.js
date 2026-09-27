@@ -193,8 +193,15 @@ function localDateKey(year, month, day) {
 function setActiveView(next) {
   activeView = next === 'calendar' ? 'calendar' : 'today';
   const isCalendar = activeView === 'calendar';
-  $('todayPanel').hidden = isCalendar;
-  $('calendarPanel').hidden = !isCalendar;
+  const todayPanel = $('todayPanel');
+  const calendarPanel = $('calendarPanel');
+  // 以当前“今日”页的实际高度为准，避免切换到历史日历时 Popup 改变长度。
+  if (isCalendar && !todayPanel.hidden) {
+    const todayHeight = Math.ceil(todayPanel.getBoundingClientRect().height);
+    if (todayHeight > 0) calendarPanel.style.height = todayHeight + 'px';
+  }
+  todayPanel.hidden = isCalendar;
+  calendarPanel.hidden = !isCalendar;
   $('tabToday').classList.toggle('active', !isCalendar);
   $('tabCalendar').classList.toggle('active', isCalendar);
   $('tabToday').setAttribute('aria-selected', String(!isCalendar));
