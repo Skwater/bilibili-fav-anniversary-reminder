@@ -8,7 +8,7 @@ const f = new Function(code + `
   return {
     pad2, dateKeyFromDate, keyToDate, isValidDateKey, mmddFromTs, yearFromTs,
     isLeapYear, feb29FallbackKey, effectiveDateFor, effectiveKeyFor, customSyncDaysFor, todayKey,
-    fmtMmddCn, fmtDateCN, fmtDateTime, escapeHtml, CFG, MSG
+    fmtMmddCn, fmtDateCN, fmtDateTime, escapeHtml, maskUid, CFG, MSG
   };
 `)();
 
@@ -33,6 +33,13 @@ eq(f.effectiveKeyFor({ debugDate: '' }), f.todayKey(), '真实日期生效');
 eq(f.fmtMmddCn('02-09'), '2 月 9 日', 'fmtMmddCn');
 eq(f.fmtDateCN(new Date(2023, 1, 9)), '2023 年 2 月 9 日', 'fmtDateCN');
 eq(f.escapeHtml('<a b="c">&\'x'), '&lt;a b=&quot;c&quot;&gt;&amp;&#39;x', 'escapeHtml');
+eq(f.maskUid(1), '*', '一位 UID 全部遮挡');
+eq(f.maskUid(12), '**', '两位 UID 全部遮挡');
+eq(f.maskUid(123), '1*3', '三位 UID 遮挡中间');
+eq(f.maskUid(123456), '12**56', '六位 UID 自适应遮挡');
+eq(f.maskUid(123456789), '123***789', '九位 UID 保留首尾三位');
+eq(f.maskUid('12345678901'), '123*****901', '十一位 UID 扩展中间遮挡');
+eq(f.maskUid('UID42'), '', '非法 UID 不展示');
 eq(f.CFG.PAGE_SIZE, '20', 'CFG 常量存在');
 eq(f.MSG.HOME_OPEN, 'HOME_OPEN', 'MSG 常量存在');
 eq(f.MSG.GET_CALENDAR_YEAR, 'GET_CALENDAR_YEAR', '日历年度消息常量存在');

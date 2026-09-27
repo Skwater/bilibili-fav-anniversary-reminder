@@ -158,6 +158,15 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+/* UID 展示脱敏：短 UID 不暴露原值；较长 UID 首尾各保留最多 3 位，中间至少遮 1 位。 */
+function maskUid(value) {
+  const uid = String(value == null ? '' : value).trim();
+  if (!/^\d+$/.test(uid)) return '';
+  if (uid.length <= 2) return '*'.repeat(uid.length);
+  const keep = Math.min(3, Math.floor((uid.length - 1) / 2));
+  return uid.slice(0, keep) + '*'.repeat(uid.length - keep * 2) + uid.slice(-keep);
+}
+
 /* ---------------- 存储封装 ---------------- */
 function storageGet(key) { return chrome.storage.local.get(key); }
 function storageSet(obj) { return chrome.storage.local.set(obj); }

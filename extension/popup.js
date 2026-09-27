@@ -30,7 +30,7 @@ let calendarCollapsed = false;
 
 function pillLogin(v) {
   const p = $('loginPill');
-  if (v.loginState === 'ok') { p.textContent = v.accountMid ? ('UID ' + v.accountMid) : '已登录'; p.className = 'pill ok'; }
+  if (v.loginState === 'ok') { p.textContent = v.accountMid ? ('UID ' + maskUid(v.accountMid)) : '已登录'; p.className = 'pill ok'; }
   else if (v.loginState === 'no') { p.textContent = '未登录'; p.className = 'pill warn'; }
   else { p.textContent = '登录未知'; p.className = 'pill'; }
 }
