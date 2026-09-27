@@ -7,7 +7,7 @@ const code = fs.readFileSync(path.join(__dirname, '..', 'extension', 'common.js'
 const f = new Function(code + `
   return {
     pad2, dateKeyFromDate, keyToDate, isValidDateKey, mmddFromTs, yearFromTs,
-    isLeapYear, feb29FallbackKey, effectiveDateFor, effectiveKeyFor, customSyncDaysFor, todayKey,
+    isLeapYear, feb29FallbackKey, effectiveDateFor, effectiveKeyFor, customSyncDaysFor, fullSyncItemTotal, todayKey,
     fmtMmddCn, fmtDateCN, fmtDateTime, escapeHtml, maskUid, CFG, MSG
   };
 `)();
@@ -41,6 +41,15 @@ eq(f.maskUid(123456789), '123***789', '九位 UID 保留首尾三位');
 eq(f.maskUid('12345678901'), '123*****901', '十一位 UID 扩展中间遮挡');
 eq(f.maskUid('UID42'), '', '非法 UID 不展示');
 eq(f.CFG.PAGE_SIZE, '20', 'CFG 常量存在');
+eq(f.CFG.FULL_SYNC_CONFIRM_THRESHOLD, '2000', '全量同步数量确认阈值');
+const syncFolders = [
+  { mediaId: 1, enabled: true, source: 'created', mediaCount: 1200 },
+  { mediaId: 2, enabled: true, source: 'collected', mediaCount: 900 },
+  { mediaId: 3, enabled: false, source: 'created', mediaCount: 1500 }
+];
+eq(f.fullSyncItemTotal(syncFolders, 'all'), '2100', '全量确认统计全部启用夹');
+eq(f.fullSyncItemTotal(syncFolders, 'created'), '1200', '全量确认统计临时范围');
+eq(f.fullSyncItemTotal(syncFolders, 'all', [3]), '1500', '首次向导统计所选未启用夹');
 eq(f.MSG.HOME_OPEN, 'HOME_OPEN', 'MSG 常量存在');
 eq(f.MSG.GET_CALENDAR_YEAR, 'GET_CALENDAR_YEAR', '日历年度消息常量存在');
 eq(f.MSG.GET_DATE_HITS, 'GET_DATE_HITS', '日历日期消息常量存在');

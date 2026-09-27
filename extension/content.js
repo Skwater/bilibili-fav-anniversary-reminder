@@ -461,8 +461,15 @@ function sendCancelSync() {
   safeSend({ type: MSG.CANCEL_SYNC });
 }
 
+function confirmLargeFullSync(folderIds) {
+  const total = fullSyncItemTotal((view && view.foldersDetailed) || [], 'all', folderIds);
+  return total <= CFG.FULL_SYNC_CONFIRM_THRESHOLD ||
+    confirm(`本次全量同步将处理约 ${total} 条收藏，可能需要较长时间，是否继续？`);
+}
+
 /* 手动触发一次同步（全部收藏夹，首次/全量） */
-function startSyncNow() {
+function startSyncNow(skipConfirm) {
+  if (!skipConfirm && !confirmLargeFullSync()) return;
   initUserStarted = true;
   show(stateCard('⏳', '开始同步…', '正在启动同步…', []));
   try {
@@ -476,6 +483,7 @@ function startSyncNow() {
 
 /* 跳过冷却、立即同步（可能再次触发 412，属于用户主动选择） */
 function forceSyncNow() {
+  if (!confirmLargeFullSync()) return;
   initUserStarted = true;
   show(stateCard('⏳', '开始同步…', '正在立即同步（已跳过等待）…', []));
   try {
@@ -489,13 +497,9 @@ function forceSyncNow() {
 
 /* 长期未全量提醒：立即全量 / 稍后（两者都记录本次提醒时间，7 天后再弹） */
 function remindFullSyncNow() {
-  const total = ((view && view.foldersDetailed) || [])
-    .filter(f => f.enabled)
-    .reduce((s, f) => s + (f.mediaCount || 0), 0);
-  if (total > CFG.FULL_SYNC_CONFIRM_THRESHOLD &&
-      !confirm(`本次全量同步将处理约 ${total} 条收藏，可能需要较长时间，是否继续？`)) return;
+  if (!confirmLargeFullSync()) return;
   safeSend({ type: MSG.MARK_FULLSYNC_REMINDED });
-  startSyncNow();
+  startSyncNow(true);
 }
 function remindFullSyncLater() {
   safeSend({ type: MSG.MARK_FULLSYNC_REMINDED });
@@ -609,13 +613,7 @@ function initWizardCard(v) {
 /* 开始同步“所选收藏夹”（首次，全量） */
 function startSyncSelected(ids) {
   if (!ids || !ids.length) return;
-  // 全量耗时提醒：选中夹官方条目数之和超过阈值时，先确认再开始
-  const sel = new Set(ids);
-  const total = ((view && view.foldersDetailed) || [])
-    .filter(f => sel.has(f.mediaId))
-    .reduce((s, f) => s + (f.mediaCount || 0), 0);
-  if (total > CFG.FULL_SYNC_CONFIRM_THRESHOLD &&
-      !confirm(`本次全量同步将处理约 ${total} 条收藏，可能需要较长时间，是否继续？`)) return;
+  if (!confirmLargeFullSync(ids)) return;
   initUserStarted = true;
   show(stateCard('⏳', '开始同步…', '正在同步所选收藏夹…', []));
   try {

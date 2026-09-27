@@ -277,9 +277,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('btnFull').addEventListener('click', async () => {
     // 全量耗时提醒：启用夹官方条目数之和超过阈值时，先确认再开始
     const v = view || await getView();
-    const total = ((v && v.foldersDetailed) || [])
-      .filter(f => f.enabled && (syncScope === 'all' || f.source === syncScope))
-      .reduce((s, f) => s + (f.mediaCount || 0), 0);
+    const total = fullSyncItemTotal((v && v.foldersDetailed) || [], syncScope);
     if (total > CFG.FULL_SYNC_CONFIRM_THRESHOLD &&
         !confirm(`本次全量同步将处理约 ${total} 条收藏，可能需要较长时间，是否继续？`)) return;
     const r = await msg({ type: MSG.SYNC_NOW, full: true, scope: syncScope });

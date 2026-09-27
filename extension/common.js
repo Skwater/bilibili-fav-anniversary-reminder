@@ -54,7 +54,7 @@ const CFG = {
   DIFF_ID_PROBE_MS: 24 * 3600 * 1000,   // 数量相等时最多每天做一次 ID 指纹核对
   CHECKPOINT_PAGES: 8,              // 全量扫描每 N 页提交一次 items + cursor 原子检查点
   BOOT_DELAY_MS: 3500,             // 打开首页后延迟首次显示浮层（避开“未登录”闪变）
-  FULL_SYNC_CONFIRM_THRESHOLD: 5000, // 全量同步条目数超过此阈值时，先确认提醒耗时
+  FULL_SYNC_CONFIRM_THRESHOLD: 2000, // 全量同步条目数超过此阈值时，先确认提醒耗时
   FULL_SYNC_STALE_MS: 30 * 24 * 3600 * 1000,   // 距上次全量超过此值视为“长期未全量”
   FULL_SYNC_REMIND_GAP_MS: 7 * 24 * 3600 * 1000 // 全量提醒最小间隔（7 天）
 };
@@ -134,6 +134,14 @@ function customSyncDaysFor(settings) {
   const raw = Number(settings && settings.customSyncDays);
   if (!Number.isFinite(raw)) return CFG.DEFAULT_SETTINGS.customSyncDays;
   return Math.min(365, Math.max(1, Math.round(raw)));
+}
+
+function fullSyncItemTotal(folders, scope, folderIds) {
+  const selected = Array.isArray(folderIds) ? new Set(folderIds) : null;
+  return (folders || [])
+    .filter(f => selected ? selected.has(f.mediaId) :
+      (f.enabled && (scope === 'all' || !scope || f.source === scope)))
+    .reduce((sum, f) => sum + (f.mediaCount || 0), 0);
 }
 
 /* ---------------- 文案 ---------------- */
