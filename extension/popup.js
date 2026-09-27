@@ -2,6 +2,14 @@
 /* 哔哩朝花夕拾 - popup */
 const $ = id => document.getElementById(id);
 
+// 仅当单行省略号实际生效时，才启用浏览器原生悬停提示。
+function enableOverflowTitle(element) {
+  element.addEventListener('mouseenter', () => {
+    if (element.scrollWidth > element.clientWidth) element.title = element.textContent || '';
+    else element.removeAttribute('title');
+  });
+}
+
 function syncModeLabel(v) {
   if (v.syncMode === 'onHome') return '每次首页同步';
   if (v.syncMode === 'daily') return '每天同步';
@@ -93,7 +101,9 @@ function appendHit(wrap, h) {
   if (h.attr === 0 && h.aid) cover.appendChild(watchLaterButton(h));
   it.appendChild(cover);
   const m = document.createElement('div'); m.className = 'm';
-  const t = document.createElement('div'); t.className = 't'; t.textContent = h.title; m.appendChild(t);
+  const t = document.createElement('div'); t.className = 't'; t.textContent = h.title;
+  enableOverflowTitle(t);
+  m.appendChild(t);
   const s = document.createElement('div'); s.className = 's';
   s.textContent = (h.upperName ? h.upperName + ' · ' : '') + '投稿发布于 ' + h.years + ' 年前的今天';
   m.appendChild(s);

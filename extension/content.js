@@ -53,6 +53,14 @@ function el(tag, cls, text) {
   return n;
 }
 
+// 仅当单行省略号实际生效时，才启用浏览器原生悬停提示。
+function enableOverflowTitle(element) {
+  element.addEventListener('mouseenter', () => {
+    if (element.scrollWidth > element.clientWidth) element.title = element.textContent || '';
+    else element.removeAttribute('title');
+  });
+}
+
 /* 扩展上下文可能已失效（重载/更新后旧页面）：统一安全发送，避免抛异常刷屏 */
 let contextDead = false;
 function safeSend(msg, cb) {
@@ -207,6 +215,7 @@ function hitItem(h) {
 
   const meta = el('div', 'dsh-meta');
   const t1 = el('div', 'dsh-title', h.title);
+  enableOverflowTitle(t1);
   meta.appendChild(t1);
   const sub1 = [];
   if (h.upperName) sub1.push(h.upperName);
