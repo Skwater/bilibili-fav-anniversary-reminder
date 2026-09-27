@@ -68,7 +68,7 @@
 ```
 extension/          # 扩展本体（manifest / common / background / content / popup / options / icons）
 tools/              # 公共工具自检 selftest.js；同步状态机自检 background-selftest.js
-assets/             # 图标源图与宣传截图（logo.png、screenshot-1.png、screenshot-2.png、screenshot-3.png）
+assets/             # 图标、三张宣传截图，以及 440×280 / 1400×560 Chrome 商店宣传图块
 ```
 
 ## 开发与自检
