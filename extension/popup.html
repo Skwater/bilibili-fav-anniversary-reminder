@@ -74,9 +74,8 @@
     .calendar-day.selected .calendar-count { color: #fff; }
     .calendar-day.outside .calendar-count { opacity: .55; }
     .calendar-day.outside.selected .calendar-count { opacity: 1; }
-    .calendar-legend { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 27px;
+    .calendar-legend { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-height: 27px;
       color: #9499a0; font-size: 11px; }
-    .calendar-legend > span { min-width: 0; }
     .calendar-actions { display: flex; align-items: center; gap: 8px; flex: none; }
     .calendar-text-btn { border: none; padding: 3px 0; color: #00a1d6; font-size: 11px; white-space: nowrap; }
     .calendar-result-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -160,7 +159,6 @@
         </div>
         <div id="calendarDays" class="calendar-days" role="grid" aria-label="历史投稿日历"></div>
         <div class="calendar-legend">
-          <span>数字表示当天历史投稿数</span>
           <div class="calendar-actions">
             <button id="calendarCollapse" class="calendar-text-btn" type="button" aria-expanded="true" aria-controls="calendarDays">收起日历 ↑</button>
             <button id="calendarToday" class="calendar-text-btn" type="button">回到今天</button>
