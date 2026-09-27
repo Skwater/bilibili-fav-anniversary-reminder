@@ -131,7 +131,7 @@ function render(v) {
   // 首次使用（从未同步过）：只显示欢迎面板 + 进入哔哩哔哩按钮
   const firstUse = !v.syncedOnce;
   $('welcomeBox').style.display = firstUse ? 'block' : 'none';
-  $('mainBox').style.display = firstUse ? 'none' : 'block';
+  $('mainBox').style.display = firstUse ? 'none' : 'flex';
   if (firstUse) {
     $('welcomeText').innerHTML = v.firstSetupReason === 'accountChanged'
       ? '检测到 B 站账号已切换。<br />旧账号收藏数据已清理，扩展设置已保留。<br />请进入哔哩哔哩重新选择收藏夹。'
@@ -195,11 +195,6 @@ function setActiveView(next) {
   const isCalendar = activeView === 'calendar';
   const todayPanel = $('todayPanel');
   const calendarPanel = $('calendarPanel');
-  // 以当前“今日”页的实际高度为准，避免切换到历史日历时 Popup 改变长度。
-  if (isCalendar && !todayPanel.hidden) {
-    const todayHeight = Math.ceil(todayPanel.getBoundingClientRect().height);
-    if (todayHeight > 0) calendarPanel.style.height = todayHeight + 'px';
-  }
   todayPanel.hidden = isCalendar;
   calendarPanel.hidden = !isCalendar;
   $('tabToday').classList.toggle('active', !isCalendar);
