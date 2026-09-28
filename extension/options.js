@@ -171,8 +171,6 @@ async function refreshAll() {
   const ss = document.querySelector(`input[name=syncScope][value="${syncScope}"]`);
   if (ss) ss.checked = true;
   if (!timeFocused('riskWait')) fillTime('riskWaitH', 'riskWaitM', 'riskWaitS', settings.rateWaitMs);
-  if (!timeFocused('burstPause')) fillTime('burstPauseH', 'burstPauseM', 'burstPauseS', settings.burstPauseMs);
-  if (document.activeElement !== $('burstPages')) $('burstPages').value = String(settings.burstPages || 120);
   getView().then(v => { if (v) renderView(v); }).catch(() => {});
   renderFolders();
 }
@@ -318,11 +316,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   };
   bindTime('riskWait', 'rateWaitMs');
-  bindTime('burstPause', 'burstPauseMs');
-  $('burstPages').addEventListener('input', () => {
-    const v = parseInt($('burstPages').value || '0', 10);
-    if (Number.isFinite(v) && v >= 1 && v <= 100000) saveSettingsPatch({ burstPages: v });
-  });
 
   $('btnSetDebug').addEventListener('click', () => {
     const val = $('debugDate').value;

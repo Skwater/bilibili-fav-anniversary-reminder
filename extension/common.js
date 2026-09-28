@@ -24,8 +24,6 @@ const CFG = {
     syncMode: 'manual',  // 自动同步：'manual'手动 / 'onHome'首页每次 / 'daily'每天一次 / 'custom'自定义天数
     customSyncDays: 3,   // 自定义自动同步间隔（1~365 天）
     rateWaitMs: 15 * 60 * 1000,   // 412 风控冷却（默认 15 分钟，设置页可改）
-    burstPauseMs: 5 * 60 * 1000,  // 单段配额暂停（默认 5 分钟，设置页可改）
-    burstPages: 120,              // 每段连续请求页数配额（默认 120，设置页可改）
     fullSyncRemind: true,         // 超过 30 天未全量同步时提醒（默认开，设置页可关）
     debugDate: ''        // 调试用“模拟今天”：''=真实今天；否则 'YYYY-MM-DD'
   },
@@ -44,10 +42,10 @@ const CFG = {
   WATCH_LATER_REFRESH_MS: 5 * 60 * 1000, // 稍后再看状态缓存 5 分钟；成功添加后立即更新内存态
   PAGE_SIZE: 20,                    // resource/list 每页数量（上限 20）
   PAGE_GAP_MS: 450,                 // 页间基础间隔（+随机抖动 0~150ms）
+  SLOW_PAGE_MS: 1200,               // 仅同步页响应变慢时增加下一页等待
+  VERY_SLOW_PAGE_MS: 2500,
   MAX_RETRY: 3,                     // 单页最大重试次数
   RATE_412_WAIT_MS: 15 * 60 * 1000,  // 命中 412 后的默认冷却：15 分钟（设置页可改）
-  BURST_PAGES: 120,                 // 每段默认页数配额（设置页可改）
-  BURST_PAUSE_MS: 5 * 60 * 1000,    // 配额跑满后的默认暂停：5 分钟（设置页可改）
   PROXY_TIMEOUT_MS: 20000,          // 单次代发请求超时
   CURSOR_TTL_MS: 6 * 3600 * 1000,   // 断点游标有效期
   SESSION_TTL_MS: 7 * 24 * 3600 * 1000, // 未完成同步会话保留 7 天

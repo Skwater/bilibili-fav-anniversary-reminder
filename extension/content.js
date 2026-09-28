@@ -4,8 +4,7 @@
  * 职责：
  *   1. 作为“取数代理”：接收 background 的 FETCH_URL，在页面上下文
  *      发起 fetch（自动携带 Cookie）
- *   2. 渲染首页右下角浮层卡片 + 状态卡片
- *   3. 调试模式：随时改变“模拟今天”（日期输入/前后一天/快捷日期）
+ *   2. 仅在有每日命中时渲染首页右下角提醒
  * ============================================================ */
 
 /* ---------------- 取数代理 ---------------- */
@@ -43,7 +42,6 @@ let userClosedCat = '';   // 用户主动收起的状态卡类别：同类别不
 let lastCat = '';         // 当前渲染的卡片类别（login / err / init / results）
 let initUserStarted = false; // 用户已在首次向导点了“开始”：不再把向导弹回来
 let wizardSelIds = [];        // 向导当前勾选的 mediaId 集合（供捕获委托直接读取）
-let wasSyncing = false;       // 上一次视图是否在同步（用于“刚结束”过渡提示）
 let doneTimer = null;         // “同步完成”过渡卡的自动隐藏定时器
 
 function el(tag, cls, text) {
@@ -293,24 +291,20 @@ function render(v) {
   shownMarked = false;
   lastViewAt = Date.now();
 
+  // 页面浮窗只承担每日命中提醒，其余状态和操作统一放在插件弹窗。
+  if (!v.syncedOnce || v.loginState !== 'ok') {
+    hide();
+    return;
+  }
+
   const dateKey = v.dateKey;
-  // 卡片类别：登录/错误优先；其次“同步中”单列一类——使用户此前收起的结果卡
-  // 不会阻止同步进度气泡弹出（popup/设置页发起的同步也要能看到提示）
-  const cat = (v.loginState === 'no') ? 'login'
-    : ((v.loginState === 'unknown' && v.loginError) ? 'err'
-    : (v.syncing ? 'syncing'
-    : (!v.syncedOnce ? 'init' : 'results')));
+  const cat = 'results';
   if (userClosedCat && userClosedCat !== cat) userClosedCat = '';
   lastCat = cat;
   if (userClosedCat === cat) { hide(); return; }   // 用户已主动收起该状态卡：静默等待
 
   const suppressed = !v.simulated &&
     (v.shownKey === dateKey || v.dismissedKey === dateKey);
-
-  // 检测“刚结束一次同步”（用于结束时给个可见的完成提示）
-  const becameIdle = wasSyncing && !v.syncing;
-  wasSyncing = v.syncing;
-  const interrupted = !!v.note && /中断|出错|冷却|暂停|风控|不可读/.test(v.note);
 
   // 1. 未登录 / 接口连不上
   if (v.loginState === 'no') {
@@ -371,29 +365,9 @@ function render(v) {
     return;
   }
 
-  // 同步中：一律显示紧凑进度气泡（不管有无命中、是否已展示过、是否模拟日期）。
-  // 同步可能是从 popup / 设置页 / 浮层发起的，右下角都应有一致的可见反馈。
-  if (v.syncing) {
-    show(syncMiniCard(v));
-    return;
-  }
-
-  // 已同步过之后：同步暂停/风控冷却同样显示在浮层（等同首次的等待窗，含 刷新/立即同步）
-  if (v.cooldownSec > 0 && !v.syncing) {
-    show(cooldownCardView(v));
-    return;
-  }
-
-  // 长期未全量提醒（>30 天，每 7 天一次，可在设置关闭）
-  if (v.fullSyncRemind && !v.syncing) {
-    show(stateCard('🔄', '已超过 30 天未全量同步',
-      '可能有已删除的收藏未及时清理，建议做一次全量同步。',
-      [btn('立即全量同步', remindFullSyncNow, true), btn('稍后', remindFullSyncLater)]));
-    return;
-  }
-
-  // 4. 命中结果（“同步中”已在上方气泡分支返回）
+  // 4. 每日命中结果
   const hits = v.hits || [];
+  if (!hits.length) { hide(); return; }
   const card = el('div', 'dsh-card dsh-results');
 
   const head = el('div', 'dsh-head');
@@ -428,30 +402,23 @@ function render(v) {
       shownMarked = true;
     }
   } else {
-    // D4：真实日期无命中 -> 不打扰；但若是“同步刚结束”，短暂显示完成提示再收起
+    // 真实日期无命中时不打扰。
     if (!v.simulated) {
-      if (becameIdle && !suppressed && !interrupted && !v.cooldownSec) {
-        showDoneTransient();
-      } else {
-        hide();
-      }
+      hide();
       return;
     }
     card.appendChild(el('div', 'dsh-empty', '该模拟日期下没有命中条目，可点下方日期快速换一天'));
   }
 
-  if (v.simulated) card.appendChild(debugPanel(v));
-
   if (suppressed) { hide(); return; }
   show(card);
 }
 
-/* 冷却/暂停等待卡：标题、倒计时 + 「刷新」「立即同步」「终止」 */
+/* 412 冷却等待卡：标题、倒计时 + 「刷新」「立即同步」「终止」 */
 function cooldownCardView(v) {
   const sec = v.cooldownSec || 0;
   const txt = sec >= 60 ? Math.ceil(sec / 60) + ' 分钟' : sec + ' 秒';
-  const desc = (v.cooldownReason === '412' ? 'B 站接口风控(412)冷却中' : '同步暂停中') +
-    '，约 ' + txt + ' 后自动继续，请勿关闭本页面';
+  const desc = 'B 站接口风控(412)冷却中，约 ' + txt + ' 后自动继续，请勿关闭本页面';
   return stateCard('⏳', v.syncedOnce ? '同步已暂停' : '收藏夹尚未同步', desc,
     [btn('刷新', requestHome), btn('立即同步', forceSyncNow, true), btn('终止', sendCancelSync)]);
 }
@@ -549,6 +516,7 @@ function initWizardCard(v) {
     head.appendChild(caret);
     head.appendChild(el('span', '', title + '（' + items.length + '）'));
     const body = el('div', 'dsh-wgroup-body');
+    const checkboxes = [];
     for (const f of items) {
       const row = el('label', 'dsh-wrow');
       const cb = document.createElement('input');
@@ -558,11 +526,29 @@ function initWizardCard(v) {
         if (cb.checked) sel.set(f.mediaId, f); else sel.delete(f.mediaId);
         syncCount();
       });
+      checkboxes.push(cb);
       row.appendChild(cb);
       row.appendChild(el('span', 'dsh-wrow-txt', f.title));
       row.appendChild(el('span', 'dsh-wrow-cnt', f.mediaCount + ' 项'));
       body.appendChild(row);
     }
+    const actions = el('div', 'dsh-wgroup-actions');
+    const setGroup = checked => {
+      for (let i = 0; i < items.length; i++) {
+        checkboxes[i].checked = checked;
+        if (checked) sel.set(items[i].mediaId, items[i]);
+        else sel.delete(items[i].mediaId);
+      }
+      syncCount();
+    };
+    const groupAll = btn('全选', () => setGroup(true));
+    const groupNone = btn('全不选', () => setGroup(false));
+    for (const button of [groupAll, groupNone]) {
+      button.classList.add('dsh-wgroup-action');
+      button.addEventListener('click', event => event.stopPropagation());
+    }
+    actions.append(groupAll, groupNone);
+    head.appendChild(actions);
     head.addEventListener('click', () => {
       const open = body.style.display !== 'none';
       body.style.display = open ? 'none' : '';
@@ -667,7 +653,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   setTimeout(requestHome, CFG.BOOT_DELAY_MS);
   // 兜底看门狗（每 9 秒）：
   //  1) “自动同步模式”下首次同步长时间未开始 → 再触发一次首页流程；
-  //  2) 提示词含 续传/冷却/暂停（配额或风控暂停中）且长时间无新状态 → 主动催一次后台：
+  //  2) 提示词含 续传/冷却/暂停（412 风控冷却中）且长时间无新状态 → 主动催一次后台：
   //     后台若仍在暂停会回推新倒计时（文字保持更新）；若暂停已过则正好拉起续传（防 SW 定时器在长暂停期丢失）。
   setInterval(() => {
     if (!view) return;

@@ -144,25 +144,13 @@
     <div class="adv-body">
 
       <div class="adv-group">
-        <div class="adv-title">风控与频率</div>
+        <div class="adv-title">风控冷却</div>
         <div class="row">
           <span>412 风控冷却：</span>
           <input type="number" id="riskWaitH" class="num3" min="0" value="0" /> 时
           <input type="number" id="riskWaitM" class="num3" min="0" value="15" /> 分
           <input type="number" id="riskWaitS" class="num3" min="0" value="0" /> 秒
           <span class="muted">（默认 15 分钟）</span>
-        </div>
-        <div class="row">
-          <span>单段配额暂停：</span>
-          <input type="number" id="burstPauseH" class="num3" min="0" value="0" /> 时
-          <input type="number" id="burstPauseM" class="num3" min="0" value="5" /> 分
-          <input type="number" id="burstPauseS" class="num3" min="0" value="0" /> 秒
-          <span class="muted">（默认 5 分钟）</span>
-        </div>
-        <div class="row">
-          <span>每段连续页数：</span>
-          <input type="number" id="burstPages" class="num3" min="1" step="1" value="120" /> 页
-          <span class="muted">（每同步满此页数后停顿一次，默认 120）</span>
         </div>
       </div>
 

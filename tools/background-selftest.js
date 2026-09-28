@@ -70,18 +70,18 @@ const context = vm.createContext({
 const expose = `
 globalThis.__bgtest = {
   CFG, mem, loginInfo,
-  refreshLogin, ensureFolderList, syncOneFolder, runSyncPass, runRefresh, handle, buildView,
+  ensureLoaded, refreshLogin, ensureFolderList, syncOneFolder, runSyncPass, runRefresh, handle, buildView,
   fingerprintIds, folderAidSet, resetAllData, resetForAccountSwitch, hitsForDateKey, computeCalendarYear, computeSevenDayReview, customSyncDue,
   createDataBackup, createDiagnosticExport, validateDataBackup, importDataBackup, setSyncBadge, addToWatchLater, removeFromWatchLater,
   refreshWatchLater, decorateWatchLaterHits,
-  setBurstLimit(value) { burstLimit = value; },
   clearRate() { rateUntil = 0; pauseReason = ''; delete mem.meta.resumeAt; delete mem.meta.resumeReason; },
+  reloadFromStore() { loaded = false; },
   reset() {
     loaded = true;
     mem.meta = {};
     mem.folders = [];
     mem.items = {};
-    mem.settings = Object.assign({}, CFG.DEFAULT_SETTINGS, { burstPages: 10000 });
+    mem.settings = Object.assign({}, CFG.DEFAULT_SETTINGS);
     mem.syncCursor = null;
     mem.syncSession = null;
     mem.pendingFull = false;
@@ -101,8 +101,6 @@ globalThis.__bgtest = {
     latestHomeTabId = 1;
     homeTabs.clear();
     homeTabs.set(1, Date.now());
-    pageBudgetUsed = 0;
-    burstLimit = 10000;
     cancelSync = false;
     rateUntil = 0;
     pauseReason = '';
@@ -525,13 +523,32 @@ function media(id, title) {
     assert(checkpointWrites.every(w => w.items && w.items.BV1), '存在游标领先于 items 的写入');
   });
 
-  await test('最后一页恰好用完配额时正常完成', async () => {
+  await test('超过原 120 页配额仍持续同步并保留检查点', async () => {
     api.mem.syncSession = { full: true, updatedAt: Date.now() };
-    api.setBurstLimit(1);
-    const folder = { mediaId: 1, title: '夹', mediaCount: 1, enabled: true };
-    fetchHandler = async () => ({ ok: true, json: { code: 0, data: { medias: [media(1)], has_more: false } } });
-    const result = await api.syncOneFolder(folder, { full: true, startPn: 1 });
-    assert(result && result.complete, '最后一页被误判为配额暂停');
+    const folder = { mediaId: 1, title: '大夹', mediaCount: 121, enabled: true };
+    fetchHandler = async url => {
+      const pn = Number(new URL(url).searchParams.get('pn'));
+      return { ok: true, json: { code: 0, data: { medias: [media(pn)], has_more: pn < 121 } } };
+    };
+    const originalSleep = vm.runInContext('sleep', context);
+    vm.runInContext('sleep = async () => {}', context);
+    try {
+      const result = await api.syncOneFolder(folder, { full: true, startPn: 1 });
+      assert(result && result.complete && executeCount === 121, '同步在旧配额阈值中断');
+      assert(Object.keys(api.mem.items).length === 121, '长夹条目不完整');
+      assert(writes.some(w => w.sync && w.sync.cursor && w.sync.cursor.pn > 120), '长夹检查点未继续推进');
+    } finally {
+      context.sleep = originalSleep;
+    }
+  });
+
+  await test('升级后清除旧配额冷却并保留续传会话', async () => {
+    store[api.CFG.KEY_META] = { mid: 42, resumeAt: Date.now() + 300000, resumeReason: 'quota' };
+    store[api.CFG.KEY_SYNC] = { session: { full: true, folderIds: [1], updatedAt: Date.now() }, cursor: null };
+    api.reloadFromStore();
+    await api.ensureLoaded();
+    assert(!api.mem.meta.resumeAt && !api.mem.meta.resumeReason, '旧配额冷却仍阻挡同步');
+    assert(api.mem.syncSession && api.mem.syncSession.full, '旧配额冷却清理时丢失续传会话');
   });
 
   await test('恢复手动全量时保持全量并继续后续收藏夹', async () => {
@@ -694,6 +711,19 @@ function media(id, title) {
     assert(!api.mem.syncSession && Object.keys(api.mem.items).length === 0, '自动模式绕过向导启动了内容同步');
   });
 
+  await test('首次打开首页时自动模式仍等待插件弹窗选择', async () => {
+    api.mem.meta = { mid: 42, syncedOnce: false };
+    api.mem.settings = Object.assign({}, api.mem.settings, { syncMode: 'onHome' });
+    api.mem.folders = [{ mediaId: 1, title: '待选择', mediaCount: 2, enabled: true, readable: true }];
+    fetchHandler = async url => {
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
+      return { ok: true, json: { code: 0, data: {} } };
+    };
+    const view = await api.handle({ type: 'HOME_OPEN' }, { tab: { id: 1, url: 'https://www.bilibili.com/' } });
+    assert(view && view.biliTabOpen && !view.syncedOnce, '未返回首次引导所需页面状态');
+    assert(!api.mem.syncSession && !api.mem.syncCursor, '用户选夹前自动开始了首次同步');
+  });
+
   await test('旧账号冷却不会阻挡新账号进入首次选择', async () => {
     api.mem.meta = { mid: 11, syncedOnce: true, resumeAt: Date.now() + 60000, resumeReason: '412' };
     api.mem.folders = [{ mediaId: 1, title: '旧夹', mediaCount: 1, enabled: true }];
@@ -752,6 +782,22 @@ function media(id, title) {
     await api.runRefresh();
     assert(!api.mem.meta.pendingFoldersOnly, '成功后刷新类型未清理');
     assert(!api.mem.syncSession, '仅刷新错误创建了内容同步会话');
+  });
+
+  await test('非 412 请求失败不建立暂停冷却', async () => {
+    api.loginInfo.ok = true;
+    api.loginInfo.mid = 42;
+    api.loginInfo.checkedAt = Date.now();
+    api.mem.meta.mid = 42;
+    api.mem.meta.syncedOnce = true;
+    fetchHandler = async url => {
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
+      if (url.includes('/created/')) return { ok: false, status: 500, error: 'HTTP 500' };
+      if (url.includes('/collected/')) return { ok: true, json: { code: 0, data: { list: [], count: 0, has_more: false } } };
+      throw new Error('unexpected url ' + url);
+    };
+    await api.runRefresh();
+    assert(!api.mem.meta.resumeAt && !api.mem.meta.resumeReason, '非 412 失败建立了冷却');
   });
 
   console.log(failed === 0 ? '\n后台同步自检全部通过 ✓' : ('\n后台同步自检失败 ' + failed + ' 项 ✗'));

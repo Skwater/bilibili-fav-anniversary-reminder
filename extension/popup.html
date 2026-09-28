@@ -46,7 +46,7 @@
     button { border: 1px solid #e3e5e7; background: #fff; color: #18191c; font-size: 13px;
       padding: 7px 0; border-radius: 8px; cursor: pointer; }
     button:hover { background: #f6f7f8; }
-    .bar button, .welcome-box .btn-go { flex: 1; }
+    .bar button { flex: 1; }
     button.primary { background: #00a1d6; border-color: #00a1d6; color: #fff; }
     button.primary:hover { background: #00b3e5; }
     .empty { text-align: center; color: #9499a0; font-size: 13px; padding: 18px 0; }
@@ -119,18 +119,78 @@
     .calendar-loading { min-height: 72px; display: grid; place-items: center; color: #9499a0; font-size: 13px; }
 
     /* 首次使用欢迎面板 */
-    .welcome-box { padding: 26px 20px 22px; text-align: center; }
-    .welcome-box .w-name { font-size: 18px; font-weight: 700; margin-bottom: 10px; }
-    .welcome-box .w-sub { color: #61666d; font-size: 13px; line-height: 1.7; margin-bottom: 20px; }
-    .welcome-box .btn-go { width: 100%; padding: 10px 0; font-size: 14px; }
+    .welcome-box { box-sizing: border-box; width: 400px; height: 600px; padding: 32px 28px;
+      flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+    .welcome-box .w-name { font-size: 20px; font-weight: 700; margin-bottom: 18px; }
+    .welcome-box .w-status { max-width: 320px; font-size: 16px; font-weight: 600; margin-bottom: 10px; }
+    .welcome-box .w-sub { max-width: 320px; color: #61666d; font-size: 14px; line-height: 1.65;
+      margin-bottom: 24px; overflow-wrap: anywhere; }
+    .welcome-box .btn-go { width: 100%; max-width: 320px; flex: none; padding: 10px 12px;
+      box-sizing: border-box; font-size: 14px; }
+    .setup-quick-actions { width: 100%; max-width: 320px; display: flex; gap: 8px; margin-top: 8px; }
+    .setup-quick-actions button { flex: 1; padding: 8px 6px; }
+    .setup-quick-actions button:disabled { opacity: .5; cursor: default; }
+    .setup-select-box { box-sizing: border-box; width: 400px; height: 600px; padding: 18px 20px 16px;
+      flex-direction: column; }
+    .setup-select-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .setup-select-head button { flex: none; padding: 5px 8px; font-size: 12px; }
+    .setup-select-head strong { font-size: 16px; }
+    .setup-select-note { color: #61666d; font-size: 12px; line-height: 1.5; margin-bottom: 10px; }
+    .setup-retry { padding: 7px 10px; align-self: flex-start; }
+    .setup-progress-box { box-sizing: border-box; width: 400px; height: 600px; padding: 32px 28px;
+      flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+    .setup-progress-box strong { font-size: 18px; margin-bottom: 14px; }
+    .setup-progress-box p { max-width: 320px; color: #61666d; font-size: 14px; line-height: 1.65;
+      overflow-wrap: anywhere; margin: 0 0 18px; }
+    .setup-progress-box .btn-go { width: 100%; max-width: 320px; padding: 10px 12px; margin-bottom: 8px; }
+    .setup-folders { width: 100%; min-height: 0; flex: 1; overflow-y: auto; text-align: left;
+      border: 1px solid #e3e5e7; border-radius: 8px; box-sizing: border-box; }
+    .setup-group-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px;
+      padding: 8px 10px; background: #f6f7f8; font-size: 12px; font-weight: 600; }
+    .setup-group-head span { flex: 1; }
+    .setup-group-head button { padding: 3px 6px; font-size: 11px; }
+    .setup-folder { display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 12px; }
+    .setup-folder + .setup-folder { border-top: 1px solid #f5f6f7; }
+    .setup-folder input { flex: none; margin: 0; }
+    .setup-folder-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .setup-folder-count { flex: none; color: #9499a0; font-size: 11px; }
+    .setup-foot { width: 100%; flex: none; margin-top: 10px; }
+    .setup-foot-row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px; }
+    .setup-foot-row span { flex: 1; color: #61666d; }
+    .setup-foot-row button { padding: 4px 8px; font-size: 11px; }
+    .setup-foot .btn-go { width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 14px; }
+    .setup-stop { margin-top: 10px; padding: 5px 12px; color: #d54949; }
   </style>
 </head>
 <body>
-  <!-- 首次使用（从未同步过）：仅欢迎语 + 开始按钮 -->
+  <!-- 首次同步完成前的引导与同步状态 -->
   <div id="welcomeBox" class="welcome-box" style="display:none">
     <div class="w-name">哔哩朝花夕拾</div>
-    <div id="welcomeText" class="w-sub">欢迎使用！<br />同步收藏夹后，每次打开哔哩哔哩首页，<br />就能看到「投稿发布于 X 年前的今天」提醒。</div>
-    <button id="btnGoStart" class="primary btn-go">进入哔哩哔哩 · 开始同步收藏夹</button>
+    <div id="welcomeStatus" class="w-status" style="display:none"></div>
+    <div id="welcomeText" class="w-sub">欢迎使用！同步收藏夹后，每次打开哔哩哔哩首页，就能看到「投稿发布于 X 年前的今天」提醒。</div>
+    <button id="btnGoStart" class="primary btn-go" type="button">进入哔哩哔哩</button>
+    <div id="setupQuickActions" class="setup-quick-actions" style="display:none">
+      <button id="btnCheckLogin" type="button">读取登录状态</button>
+      <button id="btnEnterSetup" type="button">首次同步</button>
+    </div>
+  </div>
+
+  <div id="setupSelectBox" class="setup-select-box" style="display:none">
+    <div class="setup-select-head"><button id="btnSetupBack" type="button">返回</button><strong>选择要同步的收藏夹</strong></div>
+    <div id="setupSelectNote" class="setup-select-note">正在读取收藏夹列表…</div>
+    <button id="btnRetryFolders" class="setup-retry" type="button" style="display:none">重新读取收藏夹</button>
+    <div id="setupFolders" class="setup-folders" style="display:none"></div>
+    <div id="setupFoot" class="setup-foot" style="display:none">
+      <div class="setup-foot-row"><span id="setupCount">已选 0 个</span><button id="setupAll" type="button">全选</button><button id="setupNone" type="button">全不选</button></div>
+      <button id="setupStart" class="primary btn-go" type="button">开始同步所选</button>
+    </div>
+  </div>
+
+  <div id="setupProgressBox" class="setup-progress-box" style="display:none">
+    <strong id="setupProgressTitle">首次同步进行中</strong>
+    <p id="setupProgressText">请不要关闭哔哩哔哩页面。</p>
+    <button id="btnResumeFirst" class="primary btn-go" type="button" style="display:none">继续首次同步</button>
+    <button id="setupStop" class="setup-stop" type="button">终止同步</button>
   </div>
 
   <!-- 已使用：完整面板 -->

@@ -30,6 +30,21 @@ let calendarCollapsed = false;
 let reviewLoaded = false;
 let reviewRequestSeq = 0;
 let reviewDirty = false;
+let setupStage = 'entry';
+let setupSelected = null;
+let setupFolderSignature = '';
+let setupError = '';
+let setupAccountMid = 0;
+const SETUP_UI_KEY = 'dshPopupSetup';
+
+function saveSetupUi() {
+  chrome.storage.session.set({ [SETUP_UI_KEY]: {
+    stage: setupStage,
+    selectedIds: [...(setupSelected || [])],
+    folderSignature: setupFolderSignature,
+    accountMid: setupAccountMid
+  } });
+}
 
 function pillLogin(v) {
   const p = $('loginPill');
@@ -128,17 +143,157 @@ function renderHitList(wrap, hits, emptyText) {
   for (const h of hits) appendHit(wrap, h);
 }
 
+function renderSetupFolders(folders) {
+  const readable = folders.filter(f => f.readable !== false);
+  const signature = readable.map(f => f.mediaId).join(',');
+  if (setupFolderSignature !== signature || !setupSelected) {
+    setupFolderSignature = signature;
+    setupSelected = new Set(readable.filter(f => f.enabled !== false).map(f => f.mediaId));
+  }
+  const list = $('setupFolders');
+  list.innerHTML = '';
+  const updateCount = () => {
+    $('setupCount').textContent = `已选 ${setupSelected.size} 个`;
+    $('setupStart').disabled = setupSelected.size === 0;
+  };
+  for (const [source, title] of [['created', '我创建的'], ['collected', '追更的（收藏的）']]) {
+    const items = readable.filter(f => (f.source || 'created') === source);
+    if (!items.length) continue;
+    const head = document.createElement('div');
+    head.className = 'setup-group-head';
+    const label = document.createElement('span');
+    label.textContent = `${title}（${items.length}）`;
+    const all = document.createElement('button');
+    all.type = 'button'; all.textContent = '全选';
+    const none = document.createElement('button');
+    none.type = 'button'; none.textContent = '全不选';
+    const checkboxes = [];
+    const setGroup = checked => {
+      for (let i = 0; i < items.length; i++) {
+        checkboxes[i].checked = checked;
+        if (checked) setupSelected.add(items[i].mediaId);
+        else setupSelected.delete(items[i].mediaId);
+      }
+      updateCount();
+      saveSetupUi();
+    };
+    all.addEventListener('click', () => setGroup(true));
+    none.addEventListener('click', () => setGroup(false));
+    head.append(label, all, none);
+    list.appendChild(head);
+    for (const f of items) {
+      const row = document.createElement('label');
+      row.className = 'setup-folder';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox'; checkbox.checked = setupSelected.has(f.mediaId);
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) setupSelected.add(f.mediaId);
+        else setupSelected.delete(f.mediaId);
+        updateCount();
+        saveSetupUi();
+      });
+      checkboxes.push(checkbox);
+      const name = document.createElement('span');
+      name.className = 'setup-folder-name'; name.textContent = f.title;
+      name.title = f.title;
+      const count = document.createElement('span');
+      count.className = 'setup-folder-count'; count.textContent = `${f.mediaCount || 0} 项`;
+      row.append(checkbox, name, count);
+      list.appendChild(row);
+    }
+  }
+  updateCount();
+}
+
+function openBiliTab() {
+  chrome.tabs.query({ url: ['https://*.bilibili.com/*'] }, tabs => {
+    if (tabs && tabs.length) chrome.tabs.update(tabs[0].id, { active: true });
+    else chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
+  });
+}
+
 function render(v) {
   view = v;
 
-  // 首次使用（从未同步过）：只显示欢迎面板 + 进入哔哩哔哩按钮
+  // 首次同步完成前显示引导或当前同步状态。
   const firstUse = !v.syncedOnce;
-  $('welcomeBox').style.display = firstUse ? 'block' : 'none';
+  if (firstUse && v.accountMid && setupAccountMid && v.accountMid !== setupAccountMid) {
+    setupStage = 'entry';
+    setupSelected = null;
+    setupFolderSignature = '';
+  }
+  if (v.accountMid) setupAccountMid = v.accountMid;
+  if (!firstUse) chrome.storage.session.remove(SETUP_UI_KEY);
+  const progress = firstUse && !v.loadingFolders && (v.syncing || v.cooldownSec > 0 || v.firstSyncPending);
+  const selecting = firstUse && setupStage === 'select' && v.biliTabOpen && v.loginState === 'ok' &&
+    !progress;
+  $('welcomeBox').style.display = firstUse && !selecting && !progress ? 'flex' : 'none';
+  $('setupSelectBox').style.display = selecting ? 'flex' : 'none';
+  $('setupProgressBox').style.display = progress ? 'flex' : 'none';
   $('mainBox').style.display = firstUse ? 'none' : 'flex';
   if (firstUse) {
-    $('welcomeText').innerHTML = v.firstSetupReason === 'accountChanged'
-      ? '检测到 B 站账号已切换。<br />旧账号收藏数据已清理，扩展设置已保留。<br />请进入哔哩哔哩重新选择收藏夹。'
-      : '欢迎使用！<br />同步收藏夹后，每次打开哔哩哔哩首页，<br />就能看到「投稿发布于 X 年前的今天」提醒。';
+    if (progress) {
+      const title = $('setupProgressTitle');
+      const message = $('setupProgressText');
+      const resume = $('btnResumeFirst');
+      resume.style.display = 'none';
+      if (v.cooldownSec > 0) {
+        const wait = v.cooldownSec >= 60 ? `${Math.ceil(v.cooldownSec / 60)} 分钟` : `${v.cooldownSec} 秒`;
+        title.textContent = '首次同步暂停中';
+        message.textContent = `触发 B 站接口风控（412），约 ${wait} 后自动续传。请不要关闭哔哩哔哩页面。`;
+      } else if (v.syncing) {
+        title.textContent = '首次同步进行中';
+        message.textContent = `${v.syncLabel || '正在同步所选收藏夹，请稍候。'} 请不要关闭哔哩哔哩页面。`;
+      } else {
+        title.textContent = '首次同步待继续';
+        message.textContent = v.note || '同步已中断，进度已保存。';
+        resume.style.display = 'block';
+        resume.textContent = v.biliTabOpen ? '继续首次同步' : '打开哔哩哔哩并继续';
+      }
+      return;
+    }
+    const hasSelectableFolders = v.foldersDetailed.some(f => f.readable !== false);
+    if (selecting) {
+      $('setupFolders').style.display = hasSelectableFolders ? 'block' : 'none';
+      $('setupFoot').style.display = hasSelectableFolders ? 'block' : 'none';
+      $('btnRetryFolders').style.display = !hasSelectableFolders && !v.loadingFolders ? 'block' : 'none';
+      $('setupSelectNote').textContent = setupError || (hasSelectableFolders
+        ? '勾选收藏夹后开始首次同步。'
+        : (v.loadingFolders ? '正在读取收藏夹列表…'
+          : (v.note && /失败|中断|出错/.test(v.note)
+            ? v.note : '尚未读到可选择的收藏夹，请重新读取。')));
+      if (hasSelectableFolders) renderSetupFolders(v.foldersDetailed);
+      return;
+    }
+    $('btnGoStart').style.display = 'block';
+    $('setupQuickActions').style.display = v.biliTabOpen ? 'flex' : 'none';
+    $('btnEnterSetup').disabled = v.loginState !== 'ok';
+    $('btnEnterSetup').textContent = '首次同步';
+    $('btnGoStart').textContent = '进入哔哩哔哩';
+    const status = $('welcomeStatus');
+    status.style.display = 'none';
+    if (!v.biliTabOpen) {
+      setupStage = 'entry';
+      $('welcomeText').textContent = '先进入哔哩哔哩。打开后重新点开插件，即可读取登录状态并开始首次同步。';
+    } else if (v.loginState === 'no') {
+      status.style.display = 'block';
+      status.textContent = '请先登录哔哩哔哩';
+      $('welcomeText').textContent = '登录后点击下方“读取登录状态”，再进行首次同步。';
+    } else if (v.loginState === 'unknown' && v.loginError) {
+      status.style.display = 'block';
+      status.textContent = '暂时无法读取账号';
+      $('welcomeText').textContent = v.loginError;
+    } else if (v.loginState !== 'ok') {
+      status.style.display = 'block';
+      status.textContent = '正在确认登录状态';
+      $('welcomeText').textContent = '点击下方“读取登录状态”进行检查。';
+    } else {
+      status.style.display = 'block';
+      status.textContent = v.accountMid ? `已登录 · UID ${maskUid(v.accountMid)}` : '已登录哔哩哔哩';
+      $('welcomeText').textContent = v.firstSetupReason === 'accountChanged'
+        ? '检测到 B 站账号已切换。旧账号数据已清理，请重新选择要同步的收藏夹。'
+        : '哔哩哔哩已打开。接下来选择收藏夹，完成首次同步后即可查看每日提醒。';
+    }
     return;
   }
 
@@ -387,11 +542,72 @@ function moveCalendarYear(delta) {
 let syncScope = 'all';   // 本次同步范围：全部 / 仅自建 / 仅追更
 
 document.addEventListener('DOMContentLoaded', () => {
-  $('btnGoStart').addEventListener('click', () => {
-    chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
+  $('btnGoStart').addEventListener('click', openBiliTab);
+  $('btnCheckLogin').addEventListener('click', () => {
+    $('btnCheckLogin').disabled = true;
+    chrome.runtime.sendMessage({ type: MSG.CHECK_LOGIN }, r => {
+      $('btnCheckLogin').disabled = false;
+      apply(r);
+    });
   });
+  $('btnEnterSetup').addEventListener('click', () => {
+    if (!view || !view.biliTabOpen || view.loginState !== 'ok') return;
+    if (view.firstSyncPending) {
+      chrome.runtime.sendMessage({ type: MSG.SYNC_NOW, full: true }, () => askView());
+      return;
+    }
+    setupStage = 'select';
+    setupError = '';
+    saveSetupUi();
+    render(view);
+    if (!view.foldersDetailed.some(f => f.readable !== false)) {
+      chrome.runtime.sendMessage({ type: MSG.REFRESH_FOLDERS }, () => askView());
+    }
+  });
+  $('btnSetupBack').addEventListener('click', () => {
+    setupStage = 'entry';
+    setupError = '';
+    saveSetupUi();
+    render(view);
+  });
+  $('btnRetryFolders').addEventListener('click', () => {
+    $('btnRetryFolders').disabled = true;
+    chrome.runtime.sendMessage({ type: MSG.REFRESH_FOLDERS }, () => {
+      $('btnRetryFolders').disabled = false;
+      askView();
+    });
+  });
+  $('btnResumeFirst').addEventListener('click', () => {
+    if (!view || !view.biliTabOpen) { openBiliTab(); return; }
+    chrome.runtime.sendMessage({ type: MSG.SYNC_NOW, full: true }, () => askView());
+  });
+  $('setupAll').addEventListener('click', () => {
+    setupSelected = new Set((view.foldersDetailed || []).filter(f => f.readable !== false).map(f => f.mediaId));
+    saveSetupUi();
+    render(view);
+  });
+  $('setupNone').addEventListener('click', () => {
+    setupSelected = new Set();
+    saveSetupUi();
+    render(view);
+  });
+  $('setupStart').addEventListener('click', () => {
+    const ids = [...(setupSelected || [])];
+    if (!ids.length || !view) return;
+    const total = fullSyncItemTotal(view.foldersDetailed, 'all', ids);
+    if (total > CFG.FULL_SYNC_CONFIRM_THRESHOLD &&
+        !confirm(`本次全量同步将处理约 ${total} 条收藏，可能需要较长时间，是否继续？`)) return;
+    $('setupStart').disabled = true;
+    chrome.runtime.sendMessage({ type: MSG.SYNC_NOW, full: true, folderIds: ids }, r => {
+      if (r && (r.started || r.openingHome || r.busy)) { setupError = ''; askView(); return; }
+      setupError = r && r.cooldown ? cooldownText(r.seconds) :
+        (r && r.accountChanged ? '检测到账号切换，请重新选择收藏夹。' : '同步未能启动，请重试。');
+      askView();
+    });
+  });
+  $('setupStop').addEventListener('click', () => chrome.runtime.sendMessage({ type: MSG.CANCEL_SYNC }, () => askView()));
   $('loginPill').addEventListener('click', () => {
-    chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
+    openBiliTab();
   });
   $('tabToday').addEventListener('click', () => setActiveView('today'));
   $('tabReview').addEventListener('click', () => setActiveView('review'));
@@ -423,7 +639,16 @@ document.addEventListener('DOMContentLoaded', () => {
   $('btnCancelSync').addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: MSG.CANCEL_SYNC });
   });
-  askView();
+  chrome.storage.session.get(SETUP_UI_KEY, saved => {
+    const state = saved && saved[SETUP_UI_KEY];
+    if (state && state.stage === 'select') {
+      setupStage = 'select';
+      setupSelected = new Set(state.selectedIds || []);
+      setupFolderSignature = state.folderSignature || '';
+      setupAccountMid = state.accountMid || 0;
+    }
+    askView();
+  });
 });
 
 function syncNow(full) {
@@ -441,10 +666,10 @@ function syncNow(full) {
       return;
     }
     if (r && r.cooldown) {
-      // 冷却中：给可见提示，不轮询（区分 412 风控 / 配额暂停）
+      // 冷却中：给可见提示，不轮询
       const note = $('syncNote');
       note.style.display = 'block';
-      note.textContent = cooldownText(r.seconds, r.reason);
+      note.textContent = cooldownText(r.seconds);
       return;
     }
     if (r && r.openingHome) {
@@ -465,13 +690,11 @@ function syncNow(full) {
   });
 }
 
-/* 冷却文案：412=风控，其余=单段配额暂停 */
-function cooldownText(seconds, reason) {
+/* 只有实际命中 412 才会进入冷却。 */
+function cooldownText(seconds) {
   const s = Math.max(1, seconds || 0);
   const t = s >= 60 ? Math.ceil(s / 60) + ' 分钟' : s + ' 秒';
-  return reason === '412'
-    ? 'B 站接口风控(412)冷却中，约 ' + t + ' 后自动续传，请勿关闭本页面。'
-    : '同步暂停（单段配额已用完），约 ' + t + ' 后自动继续，请勿关闭本页面。';
+  return 'B 站接口风控(412)冷却中，约 ' + t + ' 后自动续传，请勿关闭本页面。';
 }
 
 /* 后台数据变化时自动刷新（如同步进度、设置改动）——防抖 */

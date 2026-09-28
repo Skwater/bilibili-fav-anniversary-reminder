@@ -40,9 +40,7 @@ let flowCtx = null;           // 当前同步会话现场（进度展示用）
 let flowNote = '';            // 人类可读的同步阶段（展示在浮层/弹窗，方便定位卡点）
 let refreshAttempts = 0;      // 连续失败次数（用于自动重试上限）
 let rateUntil = 0;            // 暂停/冷却截止时间（epoch ms），期间不发起新请求
-let pauseReason = '';         // 本次暂停原因：'412' 风控 或 'quota' 单段配额
-let pageBudgetUsed = 0;       // 本段已消耗的页数（配额控制）
-let burstLimit = CFG.BURST_PAGES;   // 每段页数配额（设置页可调）
+let pauseReason = '';         // 本次暂停原因：'412' 风控
 let forceSkipCooldown = false;      // 用户点击“立即同步”：跳过冷却直接开跑（接受再次被 412 的风险）
 let cancelSync = false;             // 用户请求终止当前同步
 let clearAfterSync = false;         // 同步停稳后清空全部数据
@@ -93,12 +91,6 @@ function settingMs(key, fallback) {
   const v = Number(mem.settings && mem.settings[key]);
   return (Number.isFinite(v) && v >= 1000) ? v : fallback;
 }
-/* 设置页可配置的整数（如每段页数配额） */
-function settingNum(key, fallback) {
-  const v = parseInt(mem.settings && mem.settings[key], 10);
-  return (Number.isFinite(v) && v >= 1) ? v : fallback;
-}
-
 /* 冷却/暂停统一门面：内存镜像 + 持久化标记（meta.resumeAt 跨 SW 重启/关页存活） */
 function coolingMs() {
   return Math.max(0, Math.max(rateUntil, mem.meta.resumeAt || 0) - Date.now());
@@ -144,6 +136,13 @@ async function applyFolderSelection(ids) {
 
 /* ---------------- 基础 ---------------- */
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+/* 保留原有基础间隔；接口变慢时只上调下一页等待，不让快响应导致更激进的请求。 */
+function syncPageGapMs(responseMs) {
+  const base = CFG.PAGE_GAP_MS;
+  const slow = responseMs >= CFG.VERY_SLOW_PAGE_MS ? 1500
+    : responseMs >= CFG.SLOW_PAGE_MS ? 900 : 0;
+  return Math.max(base, slow) + Math.floor(Math.random() * 150);
+}
 function log(...a) {
   try { console.log('[哔哩朝花夕拾]', ...a); } catch (e) {}
 }
@@ -159,6 +158,13 @@ async function ensureLoaded() {
   mem.syncCursor = (sy.cursor && typeof sy.cursor === 'object') ? sy.cursor : null;
   mem.syncSession = (sy.session && typeof sy.session === 'object') ? sy.session : null;
   loaded = true;
+  // 旧版本的配额暂停和失败等待不再适用；升级后恢复待同步会话。
+  if (mem.meta.resumeReason && mem.meta.resumeReason !== '412') {
+    await clearHold();
+    if (mem.syncSession) {
+      try { await chrome.alarms.create(RESUME_ALARM, { when: Date.now() + 1000 }); } catch (e) {}
+    }
+  }
   if ((mem.meta.resumeAt || 0) > Date.now()) {
     try { await chrome.alarms.create(RESUME_ALARM, { when: mem.meta.resumeAt + 1000 }); } catch (e) {}
   }
@@ -434,7 +440,6 @@ async function resetForAccountSwitch(newMid) {
   cancelSync = false;
   rateUntil = 0;
   pauseReason = '';
-  pageBudgetUsed = 0;
   refreshAttempts = 0;
   flowCtx = null;
   setFlow('检测到 B 站账号切换，旧账号收藏数据已清理，请重新选择收藏夹');
@@ -1122,6 +1127,7 @@ async function syncOneFolder(folder, opts) {
     for (const k of resumeAccSeen) seen.add(k);
   }
   let pages = 0;
+  let responseAverageMs = 0;
   let apiFailed = false;
   let currentCursor = (full && mem.syncCursor && mem.syncCursor.mediaId === mediaId)
     ? mem.syncCursor : null;
@@ -1129,10 +1135,6 @@ async function syncOneFolder(folder, opts) {
   try {
     while (true) {
       if (cancelSync) throw Object.assign(new Error('cancel'), { kind: 'STOP' });
-      if (pageBudgetUsed >= burstLimit) {
-        log('单段配额用完（', pageBudgetUsed, ' 页），暂停本轮');
-        throw Object.assign(new Error('burst quota'), { kind: 'PAUSE' });
-      }
       // 实测(2026-09)：resource/list 不能带 platform=web（会返回 HTTP 412），故不带
       const url = CFG.API.MEDIA_LIST + '?media_id=' + encodeURIComponent(mediaId) +
         '&pn=' + pn + '&ps=' + CFG.PAGE_SIZE;
@@ -1140,6 +1142,7 @@ async function syncOneFolder(folder, opts) {
       let apiFail = false;
       for (let attempt = 0; attempt <= CFG.MAX_RETRY; attempt++) {
         if (attempt > 0) await sleep(1500 + attempt * 1500);
+        const requestStartedAt = Date.now();
         const res = await proxyFetch(url);
         if (!res.ok) {
           if (res.status === 412) {
@@ -1161,6 +1164,9 @@ async function syncOneFolder(folder, opts) {
           continue;
         }
         j = jj;
+        const responseMs = Math.max(0, Date.now() - requestStartedAt);
+        responseAverageMs = responseAverageMs === 0 ? responseMs
+          : Math.round(responseAverageMs * 0.7 + responseMs * 0.3);
         break;
       }
       if (apiFail) { apiFailed = true; break; }
@@ -1174,7 +1180,6 @@ async function syncOneFolder(folder, opts) {
         if (k) seen.add(k);
       }
       pages++;
-      pageBudgetUsed++;
       pn++;
       // 跨段累积已确认 keys（仅全量；增量到已知边界即停，无需跨段记忆）：
       // 断点/中断/被杀后，完成段的清理基于各段全集，不会误删前段条目。
@@ -1204,12 +1209,11 @@ async function syncOneFolder(folder, opts) {
       const hasMore = !!j.data.has_more;
       if (!hasMore) break;
       if (!full && medias.some(m => preKnown.has(idKeyOf(m)))) break; // 已到已知边界
-      await sleep(CFG.PAGE_GAP_MS + Math.floor(Math.random() * 150)); // 随机抖动，避免节奏太规整
-      if (pages % 25 === 0) await sleep(1500);                        // 每 25 页缓一口气，降低风控概率
+      await sleep(syncPageGapMs(responseAverageMs));
     }
   } finally {
     flowCtx = null;
-    // 正常结束、配额暂停和可捕获异常都提交最后一批；强杀 SW 时则回退到上个原子检查点。
+    // 正常结束和可捕获异常都提交最后一批；强杀 SW 时则回退到上个原子检查点。
     if (full && currentCursor) await persistCheckpoint(currentCursor);
     else await persistItems();
   }
@@ -1554,7 +1558,7 @@ async function runSyncPass(folders, forceFull) {
       folder.diffMedia = folder.mediaCount || 0;
       folder.diffFingerprint = remoteFingerprint;
       folder.diffCheckedAt = Date.now();
-      await persistFolders();   // 立即落盘：配额中断/页面关闭也不丢已核对夹的基线
+      await persistFolders();   // 立即落盘：请求中断/页面关闭也不丢已核对夹的基线
       pushView();
       await sleep(CFG.PAGE_GAP_MS);
     } else if (j.code === -101) {
@@ -1594,9 +1598,7 @@ async function runRefresh(verifiedMid) {
     } else {
       // 暂停/冷却中：任何点击/自动触发都不静默，给出可见倒计时提示
       const s = Math.max(1, Math.ceil(wait / 1000));
-      setFlow(pauseReason === '412'
-        ? 'B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传，请勿关闭本页面'
-        : '同步暂停（单段配额已用完），约 ' + s + ' 秒后自动继续，请勿关闭本页面');
+      setFlow('B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传，请勿关闭本页面');
       pushView();
       return;
     }
@@ -1609,8 +1611,6 @@ async function runRefresh(verifiedMid) {
   // 新会话复位终止标志：空闲期点过“终止”只清了冷却/游标，不该让下一次手动同步
   // 一开始就被残留的 cancelSync 立刻 STOP（曾导致终止后需点两次才开始）。
   cancelSync = false;
-  pageBudgetUsed = 0;
-  burstLimit = settingNum('burstPages', CFG.BURST_PAGES);
   pauseReason = '';
   try {
     await ensureLoaded();
@@ -1765,25 +1765,14 @@ async function runRefresh(verifiedMid) {
       setFlow('同步已终止');
       log('同步已由用户终止');
     } else if (err && err.kind === 'RETRY_LATER') {
-      // 中断也留“短续传点”（60s 后自动再试），保证链路不断；
-      // 连续 10 次仍失败则停下，交回用户手动点“同步”。
-      if (refreshAttempts < 10) {
-        await holdUntil(60000, 'retry');
-        setFlow('同步中断，约 1 分钟后自动续传');
-      } else {
-        setFlow('同步多次中断，请稍后手动点“同步”继续');
-      }
-      log('同步中断（页面关闭/超时/标签失效），游标已保存，将自动续传');
+      // 请求失败后保留断点；不再人为设置暂停时间。
+      setFlow('同步请求失败，断点已保存，请稍后重试');
+      log('同步中断（页面关闭/超时/标签失效），游标已保存');
     } else if (err && err.kind === 'RATE') {
       const wait = settingMs('rateWaitMs', CFG.RATE_412_WAIT_MS);   // 412 冷却（设置页可调，默认 15 分钟）
       await holdUntil(wait, '412');
       setFlow('B 站接口风控(412)：暂停 ' + Math.round(wait / 1000) + ' 秒后自动续传，请勿关闭本页面');
       log('412 风控，冷却至', new Date(rateUntil).toLocaleTimeString(), '后自动续传');
-    } else if (err && err.kind === 'PAUSE') {
-      const wait = settingMs('burstPauseMs', CFG.BURST_PAUSE_MS);   // 单段配额暂停（设置页可调，默认 5 分钟）
-      await holdUntil(wait, 'quota');
-      setFlow('本段配额已用完，暂停 ' + Math.round(wait / 1000) + ' 秒后自动继续，请勿关闭本页面');
-      log('单段配额用完，暂停至', new Date(rateUntil).toLocaleTimeString());
     } else {
       setFlow('同步出错：' + ((err && err.message) || err));
       log('同步出错:', err);
@@ -2000,6 +1989,9 @@ async function buildView() {
     lastSyncAt: mem.meta.lastSyncAt || 0,
     syncedOnce: !!mem.meta.syncedOnce,
     syncing,
+    firstSyncPending: !mem.meta.syncedOnce && !!(mem.syncSession || mem.syncCursor),
+    loadingFolders: refreshBusy && !!mem.meta.pendingFoldersOnly,
+    biliTabOpen: !!(await findHomeTab()),
     fullSyncRemind,
     syncLabel: flowCtx
       ? `同步中：${flowCtx.folderTitle}（${flowCtx.folderIndex}/${flowCtx.folderTotal}，${flowCtx.phase}）`
@@ -2052,7 +2044,7 @@ async function findHomeTab() {
 }
 
 /* 手动操作先绑定一个真实 B 站标签并确认账号，再判断旧冷却状态。
-   这样旧账号的 412/配额暂停不会阻挡新账号进入首次选择。 */
+   这样旧账号的冷却不会阻挡新账号进入首次选择。 */
 async function prepareAccountForAction(tab) {
   if (!tab) return null;
   homeTabs.set(tab.id, Date.now());
@@ -2116,12 +2108,14 @@ async function handle(msg, sender) {
         runRefresh();
         return buildView();
       }
+      // 首次同步由插件弹窗引导用户选夹后启动，不因自动同步模式直接开扫。
+      if (!mem.meta.syncedOnce && !mem.syncSession && !mem.syncCursor) return buildView();
       // 自动续传/自动同步判定：冷却时间戳已持久化（meta.resumeAt），跨重启仍生效
       const mode = mem.settings.syncMode || 'manual';
       const resumeAt = mem.meta.resumeAt || 0;
       let shouldRun = false;
       if (resumeAt > 0) {
-        // 曾触发 412/配额冷却：到点且此刻在 B 站 → 自动继续；未到点 → 不进行操作
+        // 曾触发 412 冷却：到点且此刻在 B 站 → 自动继续
         if (resumeAt <= Date.now()) shouldRun = true;
       } else if (mem.syncSession) {
         // 未完成会话优先于新的自动同步判定，避免 daily 已记当天后吞掉续传。
@@ -2202,11 +2196,9 @@ async function handle(msg, sender) {
       const wait = coolingMs();
       if (wait > 0 && !force) {
         const s = Math.max(1, Math.ceil(wait / 1000));
-        const reason = pauseReason === '412' ? '412' : (mem.meta.resumeReason === '412' ? '412' : 'quota');
+        const reason = '412';
         log('同步请求被冷却拦截，剩余', s, '秒');
-        setFlow(reason === '412'
-          ? 'B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传，请勿关闭本页面'
-          : '同步暂停（单段配额已用完），约 ' + s + ' 秒后自动继续，请勿关闭本页面');
+        setFlow('B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传，请勿关闭本页面');
         pushView();
         return { started: false, cooldown: true, seconds: s, reason };
       }
@@ -2265,10 +2257,8 @@ async function handle(msg, sender) {
       const wait2 = coolingMs();
       if (wait2 > 0) {
         const s = Math.max(1, Math.ceil(wait2 / 1000));
-        const reason = pauseReason === '412' ? '412' : (mem.meta.resumeReason === '412' ? '412' : 'quota');
-        setFlow(reason === '412'
-          ? 'B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传，请勿关闭本页面'
-          : '同步暂停（单段配额已用完），约 ' + s + ' 秒后自动继续，请勿关闭本页面');
+        const reason = '412';
+        setFlow('B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传，请勿关闭本页面');
         pushView();
         return { cooldown: true, seconds: s, reason };
       }
