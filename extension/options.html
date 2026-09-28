@@ -157,7 +157,7 @@
       <div class="adv-group">
         <div class="debug-switch-row">
           <div>
-            <div class="adv-title">🧪 开发调试 · 模拟首页日期</div>
+            <div class="adv-title">模拟首页日期</div>
             <div class="muted">仅用于测试首页在指定日期的提醒效果，不用于日常浏览。</div>
           </div>
           <label><input type="checkbox" id="debugToggle" /> 启用</label>
@@ -170,9 +170,8 @@
             <span>模拟首页日期：</span><input type="date" id="debugDate" />
             <button id="btnSetDebug" class="primary">应用日期</button>
             <button id="btnReal">恢复真实今天</button>
-            <button id="btnForce">清除当天去重</button>
+            <button id="btnForce">重新显示当日提醒</button>
           </div>
-          <div class="debug-help">会影响：首页提醒、Popup“今日”页和年份文案。不会影响：历史日历中主动选择的浏览日期。</div>
         </div>
       </div>
 
@@ -187,8 +186,7 @@
         </div>
         <div id="dataStatus" class="muted data-status"></div>
         <div class="row">
-          <button id="btnClear" class="danger">清空本地数据（收藏夹/条目/同步状态）</button>
-          <span class="muted">设置与模拟日期也会被重置</span>
+          <button id="btnClear" class="danger">清空本地数据</button>
         </div>
       </div>
 
