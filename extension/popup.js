@@ -298,8 +298,6 @@ function render(v) {
   }
 
   pillLogin(v);
-  $('effDate').textContent = v.dateKey + (v.simulated ? '（模拟）' : '');
-
   // 调试提示
   const hint = $('debugHint');
   hint.innerHTML = '';

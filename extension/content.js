@@ -374,11 +374,8 @@ function render(v) {
   const ttlWrap = el('div', 'dsh-titles');
   if (hits.length) {
     const years = [...new Set(hits.map(h => h.years))].sort((a, b) => b - a);
-    const span = years.length > 1 ? `（最久 ${years[0]} 年前）` : '';
-    ttlWrap.appendChild(el('div', 'dsh-title-main', `📅 投稿发布于 ${years[0]} 年前的今天${span}`));
-    ttlWrap.appendChild(el('div', 'dsh-title-sub',
-      `${dateKey} · 收藏夹里 ${v.folders.enabled} 个夹 / ${hits.length} 条命中` +
-      (v.simulated ? ' · 模拟日期' : '')));
+    ttlWrap.appendChild(el('div', 'dsh-title-main', `📅 历史上的今天（最早投稿发布于${years[0]}年前）`));
+    ttlWrap.appendChild(el('div', 'dsh-title-sub', `${dateKey} · ${hits.length} 条`));
   } else {
     ttlWrap.appendChild(el('div', 'dsh-title-main', v.simulated ? '📭 今天没有命中' : '📭 今天没有“历史投稿”'));
     ttlWrap.appendChild(el('div', 'dsh-title-sub', v.simulated ? '可点下方日期快速试一条' : `${dateKey} · 收藏夹里暂无 ${fmtMmddCn(dateKey.slice(5))} 发布的投稿`));
@@ -391,12 +388,8 @@ function render(v) {
 
   if (hits.length) {
     const list = el('div', 'dsh-list');
-    for (const h of hits.slice(0, 10)) list.appendChild(hitItem(h));
+    for (const h of hits) list.appendChild(hitItem(h));
     card.appendChild(list);
-    if (hits.length > 10) {
-      card.appendChild(el('div', 'dsh-more',
-        `还有 ${hits.length - 10} 条 · 点击扩展图标可查看全部`));
-    }
     if (!suppressed) {
       safeSend({ type: MSG.MARK_SHOWN });
       shownMarked = true;

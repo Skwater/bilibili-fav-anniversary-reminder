@@ -207,7 +207,7 @@
   text-overflow: ellipsis !important;
 }
 
-.dsh-more, .dsh-empty {
+.dsh-empty {
   padding: 10px 14px !important;
   font-size: 12px !important;
   color: #9499a0 !important;
