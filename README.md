@@ -8,7 +8,7 @@
 
 > 🛒 **一键安装**：[Chrome 应用商店 · 哔哩朝花夕拾](https://chromewebstore.google.com/detail/kgamlldkccpldahaohnbnnfdnegphppe)
 
-> 当前正式版：**v1.1.0**
+> 当前正式版：**v1.2.0**
 
 > Chrome 应用商店的更新需要审核，商店版本可能比 [GitHub Releases](https://github.com/Skwater/bilibili-fav-anniversary-reminder/releases) 晚几天，个别情况可能更久；实际可安装版本以商店页面显示为准。
 
