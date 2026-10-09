@@ -224,8 +224,9 @@ function render(v) {
   }
   if (v.accountMid) setupAccountMid = v.accountMid;
   if (!firstUse) chrome.storage.session.remove(SETUP_UI_KEY);
-  const progress = firstUse && !v.loadingFolders && (v.syncing || v.cooldownSec > 0 || v.firstSyncPending);
-  const selecting = firstUse && setupStage === 'select' && v.biliTabOpen && v.loginState === 'ok' &&
+  const progress = firstUse && !v.loadingFolders &&
+    (v.syncing || (v.loginState === 'ok' && (v.cooldownSec > 0 || v.firstSyncPending)));
+  const selecting = firstUse && setupStage === 'select' && v.loginState === 'ok' &&
     !progress;
   $('welcomeBox').style.display = firstUse && !selecting && !progress ? 'flex' : 'none';
   $('setupSelectBox').style.display = selecting ? 'flex' : 'none';
@@ -240,15 +241,15 @@ function render(v) {
       if (v.cooldownSec > 0) {
         const wait = v.cooldownSec >= 60 ? `${Math.ceil(v.cooldownSec / 60)} 分钟` : `${v.cooldownSec} 秒`;
         title.textContent = '首次同步暂停中';
-        message.textContent = `触发 B 站接口风控（412），约 ${wait} 后自动续传。请不要关闭哔哩哔哩页面。`;
+        message.textContent = `触发 B 站接口风控（412），约 ${wait} 后自动续传。`;
       } else if (v.syncing) {
         title.textContent = '首次同步进行中';
-        message.textContent = `${v.syncLabel || '正在同步所选收藏夹，请稍候。'} 请不要关闭哔哩哔哩页面。`;
+        message.textContent = v.syncLabel || '正在同步所选收藏夹，请稍候。';
       } else {
         title.textContent = '首次同步待继续';
         message.textContent = v.note || '同步已中断，进度已保存。';
         resume.style.display = 'block';
-        resume.textContent = v.biliTabOpen ? '继续首次同步' : '打开哔哩哔哩并继续';
+        resume.textContent = '继续首次同步';
       }
       return;
     }
@@ -265,17 +266,14 @@ function render(v) {
       if (hasSelectableFolders) renderSetupFolders(v.foldersDetailed);
       return;
     }
-    $('btnGoStart').style.display = 'block';
-    $('setupQuickActions').style.display = v.biliTabOpen ? 'flex' : 'none';
+    $('btnGoStart').style.display = v.loginState === 'ok' ? 'none' : 'block';
+    $('setupQuickActions').style.display = 'flex';
     $('btnEnterSetup').disabled = v.loginState !== 'ok';
     $('btnEnterSetup').textContent = '首次同步';
-    $('btnGoStart').textContent = '进入哔哩哔哩';
+    $('btnGoStart').textContent = '登录哔哩哔哩';
     const status = $('welcomeStatus');
     status.style.display = 'none';
-    if (!v.biliTabOpen) {
-      setupStage = 'entry';
-      $('welcomeText').textContent = '先进入哔哩哔哩。打开后重新点开插件，即可读取登录状态并开始首次同步。';
-    } else if (v.loginState === 'no') {
+    if (v.loginState === 'no') {
       status.style.display = 'block';
       status.textContent = '请先登录哔哩哔哩';
       $('welcomeText').textContent = '登录后点击下方“读取登录状态”，再进行首次同步。';
@@ -292,7 +290,7 @@ function render(v) {
       status.textContent = v.accountMid ? `已登录 · UID ${maskUid(v.accountMid)}` : '已登录哔哩哔哩';
       $('welcomeText').textContent = v.firstSetupReason === 'accountChanged'
         ? '检测到 B 站账号已切换。旧账号数据已清理，请重新选择要同步的收藏夹。'
-        : '哔哩哔哩已打开。接下来选择收藏夹，完成首次同步后即可查看每日提醒。';
+        : '已读取浏览器中的登录状态。选择收藏夹并完成首次同步后，即可查看每日提醒。';
     }
     return;
   }
@@ -549,7 +547,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
   $('btnEnterSetup').addEventListener('click', () => {
-    if (!view || !view.biliTabOpen || view.loginState !== 'ok') return;
+    if (!view || view.loginState !== 'ok') return;
     if (view.firstSyncPending) {
       chrome.runtime.sendMessage({ type: MSG.SYNC_NOW, full: true }, () => askView());
       return;
@@ -576,7 +574,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
   $('btnResumeFirst').addEventListener('click', () => {
-    if (!view || !view.biliTabOpen) { openBiliTab(); return; }
     chrome.runtime.sendMessage({ type: MSG.SYNC_NOW, full: true }, () => askView());
   });
   $('setupAll').addEventListener('click', () => {
@@ -597,9 +594,9 @@ document.addEventListener('DOMContentLoaded', () => {
         !confirm(`本次全量同步将处理约 ${total} 条收藏，可能需要较长时间，是否继续？`)) return;
     $('setupStart').disabled = true;
     chrome.runtime.sendMessage({ type: MSG.SYNC_NOW, full: true, folderIds: ids }, r => {
-      if (r && (r.started || r.openingHome || r.busy)) { setupError = ''; askView(); return; }
-      setupError = r && r.cooldown ? cooldownText(r.seconds) :
-        (r && r.accountChanged ? '检测到账号切换，请重新选择收藏夹。' : '同步未能启动，请重试。');
+      if (r && (r.started || r.busy)) { setupError = ''; askView(); return; }
+      setupError = r && r.error ? r.error : (r && r.cooldown ? cooldownText(r.seconds) :
+        (r && r.accountChanged ? '检测到账号切换，请重新选择收藏夹。' : '同步未能启动，请重试。'));
       askView();
     });
   });
@@ -670,13 +667,11 @@ function syncNow(full) {
       note.textContent = cooldownText(r.seconds);
       return;
     }
-    if (r && r.openingHome) {
-      // 后台已自动打开 B 站首页（前台可见），页面加载完成后会自动接续本次同步
-      return;
-    }
-    if (r && r.needHome) {
-      // 兜底：无可用 B 站标签
-      chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
+    if (r && (r.error || r.accountChanged)) {
+      const note = $('syncNote');
+      note.style.display = 'block';
+      note.textContent = r.error || '检测到账号切换，请重新选择收藏夹。';
+      askView();
       return;
     }
     // 开启轮询进度
@@ -692,7 +687,7 @@ function syncNow(full) {
 function cooldownText(seconds) {
   const s = Math.max(1, seconds || 0);
   const t = s >= 60 ? Math.ceil(s / 60) + ' 分钟' : s + ' 秒';
-  return 'B 站接口风控(412)冷却中，约 ' + t + ' 后自动续传，请勿关闭本页面。';
+  return 'B 站接口风控(412)冷却中，约 ' + t + ' 后自动续传。';
 }
 
 /* 后台数据变化时自动刷新（如同步进度、设置改动）——防抖 */

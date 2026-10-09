@@ -83,7 +83,6 @@ const MSG = {
   CLEAR_DATA: 'CLEAR_DATA',         // 终止同步并清空全部本地数据
   LOG: 'LOG',
   /* background -> content */
-  FETCH_URL: 'FETCH_URL',           // 让 content 代发 B 站请求
   VIEW_UPDATE: 'VIEW_UPDATE'        // 推送最新视图
 };
 

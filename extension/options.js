@@ -31,7 +31,7 @@ function renderView(v) {
     `收藏夹：${v.folders.enabled}/${v.folders.total} 个启用`,
     `条目：${v.folders.enabledItems}/${v.folders.items} 条启用`
   ];
-  if (v.firstSetupReason === 'accountChanged') parts.push('账号已切换，请回到 B 站首页重新选择收藏夹');
+  if (v.firstSetupReason === 'accountChanged') parts.push('账号已切换，请在插件弹窗重新选择收藏夹');
   parts.push(v.syncing ? '同步中…' : (v.lastSyncAt ? '最近同步：' + fmtDateTime(v.lastSyncAt) : '尚未同步'));
   sync.textContent = parts.join('　');
   if (v.syncing && v.syncLabel) sync.textContent += '\n' + v.syncLabel;
@@ -73,7 +73,7 @@ async function renderFolders() {
   list.innerHTML = '';
   if (!folders.length) {
     const d = document.createElement('div'); d.className = 'muted';
-    d.textContent = '尚未拉到收藏夹列表——请先打开哔哩哔哩首页触发同步。';
+    d.textContent = '尚未读取收藏夹列表，请确认已登录哔哩哔哩后刷新收藏夹。';
     list.appendChild(d);
     return;
   }
@@ -271,6 +271,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('btnSync').addEventListener('click', async () => {
     const r = await msg({ type: MSG.SYNC_NOW, full: false, scope: syncScope });
     if (r && r.busy) $('syncStatus').textContent = '已有同步正在进行中。';
+    else if (r && r.error) $('syncStatus').textContent = r.error;
+    else if (r && r.accountChanged) await refreshAll();
   });
   $('btnFull').addEventListener('click', async () => {
     // 全量耗时提醒：启用夹官方条目数之和超过阈值时，先确认再开始
@@ -280,10 +282,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         !confirm(`本次全量同步将处理约 ${total} 条收藏，可能需要较长时间，是否继续？`)) return;
     const r = await msg({ type: MSG.SYNC_NOW, full: true, scope: syncScope });
     if (r && r.busy) $('syncStatus').textContent = '已有同步正在进行中。';
+    else if (r && r.error) $('syncStatus').textContent = r.error;
+    else if (r && r.accountChanged) await refreshAll();
   });
   $('btnRefreshFolders').addEventListener('click', async () => {
     const r = await msg({ type: MSG.REFRESH_FOLDERS });
     if (r && r.busy) $('syncStatus').textContent = '已有同步正在进行中。';
+    else if (r && r.error) $('syncStatus').textContent = r.error;
+    else if (r && r.accountChanged) await refreshAll();
     else if (r && r.cooldown) $('syncStatus').textContent = '冷却中，稍后再刷新收藏夹列表。';
     else $('syncStatus').textContent = '已请求刷新收藏夹列表…';
   });

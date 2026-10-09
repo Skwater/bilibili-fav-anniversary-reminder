@@ -9,12 +9,15 @@ const common = fs.readFileSync(path.join(root, 'extension', 'common.js'), 'utf8'
 const background = fs.readFileSync(path.join(root, 'extension', 'background.js'), 'utf8');
 
 let fetchHandler = async () => ({ ok: false, error: 'UNMOCKED' });
-let executeCount = 0;
+let requestCount = 0;
 let tabQueryResult = [{ id: 1, url: 'https://www.bilibili.com/' }];
 const createdTabs = [];
 const writes = [];
 const store = {};
 const badgeTexts = [];
+let csrfValue = 'test-csrf';
+let cookieChangeListener;
+let alarmListener;
 
 const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const chrome = {
@@ -37,11 +40,9 @@ const chrome = {
     },
     onChanged: { addListener() {} }
   },
-  scripting: {
-    async executeScript({ args }) {
-      executeCount++;
-      return [{ result: await fetchHandler(args[0]) }];
-    }
+  cookies: {
+    async get() { return csrfValue == null ? null : { value: csrfValue }; },
+    onChanged: { addListener(fn) { cookieChangeListener = fn; } }
   },
   tabs: {
     async query() { return clone(tabQueryResult); },
@@ -51,7 +52,7 @@ const chrome = {
   },
   alarms: {
     async create() {}, async clear() { return true; },
-    onAlarm: { addListener() {} }
+    onAlarm: { addListener(fn) { alarmListener = fn; } }
   },
   action: {
     async setBadgeText(opts) { badgeTexts.push(opts.text); },
@@ -64,7 +65,13 @@ const chrome = {
 };
 
 const context = vm.createContext({
-  chrome, console, setTimeout, clearTimeout, Math, Date, Promise,
+  chrome, console, setTimeout, clearTimeout, Math, Date, Promise, AbortController, URLSearchParams,
+  async fetch(url, options) {
+    requestCount++;
+    const result = await fetchHandler(url, options);
+    return { ok: result.ok, status: result.status || (result.ok ? 200 : 500),
+      async json() { return result.json || null; } };
+  },
   importScripts() {}
 });
 const expose = `
@@ -73,7 +80,8 @@ globalThis.__bgtest = {
   ensureLoaded, refreshLogin, ensureFolderList, syncOneFolder, runSyncPass, runRefresh, handle, buildView,
   fingerprintIds, folderAidSet, resetAllData, resetForAccountSwitch, hitsForDateKey, computeCalendarYear, computeSevenDayReview, customSyncDue,
   createDataBackup, createDiagnosticExport, validateDataBackup, importDataBackup, setSyncBadge, addToWatchLater, removeFromWatchLater,
-  refreshWatchLater, decorateWatchLaterHits,
+  refreshWatchLater, decorateWatchLaterHits, proxyFetch,
+  async waitIdle() { for (let i = 0; i < 100; i++) { if (!refreshBusy) return; await sleep(5); } throw new Error('同步未停稳'); },
   clearRate() { rateUntil = 0; pauseReason = ''; delete mem.meta.resumeAt; delete mem.meta.resumeReason; },
   reloadFromStore() { loaded = false; },
   reset() {
@@ -98,10 +106,12 @@ globalThis.__bgtest = {
     loginInfo.failedAt = 0;
     loginCheckPromise = null;
     pendingAccountSwitch = null;
-    latestHomeTabId = 1;
+    clearTimeout(cookieRefreshTimer);
+    authEpoch = 0;
     homeTabs.clear();
     homeTabs.set(1, Date.now());
     cancelSync = false;
+    cookieSyncInterrupted = false;
     rateUntil = 0;
     pauseReason = '';
     clearAfterSync = false;
@@ -119,7 +129,8 @@ async function test(name, fn) {
   try {
     api.reset();
     writes.length = 0;
-    executeCount = 0;
+    requestCount = 0;
+    csrfValue = 'test-csrf';
     createdTabs.length = 0;
     tabQueryResult = [{ id: 1, url: 'https://www.bilibili.com/' }];
     for (const key of Object.keys(store)) delete store[key];
@@ -194,22 +205,60 @@ function media(id, title) {
     assert(JSON.stringify(badgeTexts) === JSON.stringify(['↻', '']), '角标内容或清理行为错误');
   });
 
-  await test('稍后再看校验 aid 并转发 B 站官方接口结果', async () => {
+  await test('稍后再看在后台携带 Cookie 和 CSRF 调用官方接口', async () => {
     const invalid = await api.addToWatchLater('not-an-aid');
     assert(!invalid.ok && invalid.error === 'INVALID_AID', '非法 aid 未被拦截');
-    fetchHandler = async aid => ({ ok: Number(aid) === 123 });
+    fetchHandler = async (url, options) => {
+      assert(options.credentials === 'include', '后台未携带浏览器凭据');
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
+      assert(url.endsWith('/toview/add') && options.method === 'POST', '稍后再看请求错误');
+      assert(options.body.get('aid') === '123' && options.body.get('csrf') === csrfValue, '提交参数错误');
+      return { ok: true, json: { code: 0 } };
+    };
     const added = await api.addToWatchLater(123);
-    assert(added.ok && executeCount === 1, '稍后再看未通过页面主世界执行');
+    assert(added.ok && requestCount === 2, '稍后再看未完成登录复核与后台提交');
+    assert(!JSON.stringify(store).includes(csrfValue), 'CSRF 被写入存储');
   });
 
-  await test('没有 B 站标签时自动打开首页并继续添加', async () => {
+  await test('没有 B 站标签时仍可添加稍后再看且不打开首页', async () => {
     tabQueryResult = [];
-    fetchHandler = async aid => ({ ok: Number(aid) === 456 });
+    fetchHandler = async url => ({ ok: true, json: url.includes('/nav')
+      ? { code: 0, data: { isLogin: true, mid: 42 } } : { code: 0 } });
     const added = await api.addToWatchLater(456);
-    assert(added.ok, '自动打开首页后没有继续添加');
-    assert(createdTabs.length === 1 && createdTabs[0].url === 'https://www.bilibili.com/' && createdTabs[0].active,
-      '没有以前台方式打开 B 站首页');
-    assert(executeCount === 1, '页面可用后没有执行原添加请求');
+    assert(added.ok && createdTabs.length === 0, '稍后再看依赖打开首页');
+  });
+
+  await test('缺少 CSRF 时拒绝提交稍后再看', async () => {
+    csrfValue = null;
+    fetchHandler = async () => ({ ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } });
+    const added = await api.addToWatchLater(456);
+    assert(!added.ok && requestCount === 1, '缺少 CSRF 仍提交了 POST');
+  });
+
+  await test('稍后再看操作发现换号时不提交旧列表的视频', async () => {
+    api.mem.meta.mid = 11;
+    fetchHandler = async () => ({ ok: true, json: { code: 0, data: { isLogin: true, mid: 22 } } });
+    const added = await api.addToWatchLater(456);
+    assert(!added.ok && added.error === 'ACCOUNT_CHANGED' && requestCount === 1, '换号后继续提交旧操作');
+  });
+
+  await test('稍后再看请求期间 Cookie 变化时不写回旧操作状态', async () => {
+    let release;
+    let entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    fetchHandler = async url => {
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
+      entered();
+      await new Promise(resolve => { release = resolve; });
+      return { ok: true, json: { code: 0 } };
+    };
+    const pending = api.addToWatchLater(456);
+    await started;
+    cookieChangeListener({ cookie: { domain: '.bilibili.com', name: 'SESSDATA' } });
+    release();
+    const result = await pending;
+    assert(!result.ok && result.error === 'ACCOUNT_CHANGED', '登录变化后接受了旧操作结果');
+    assert(!api.decorateWatchLaterHits([{ aid: 456 }])[0].inWatchLater, '旧操作污染了稍后再看缓存');
   });
 
   await test('稍后再看列表状态写入视图并区分已加入投稿', async () => {
@@ -238,7 +287,8 @@ function media(id, title) {
     api.mem.meta.mid = 42;
     api.loginInfo.ok = true;
     api.loginInfo.mid = 42;
-    fetchHandler = async () => ({ ok: true });
+    fetchHandler = async url => ({ ok: true, json: url.includes('/nav')
+      ? { code: 0, data: { isLogin: true, mid: 42 } } : { code: 0 } });
     const added = await api.addToWatchLater(303);
     assert(added.ok && added.inWatchLater, '添加结果未返回已加入状态');
     assert(api.decorateWatchLaterHits([{ aid: 303 }])[0].inWatchLater, '添加后内存状态未更新');
@@ -256,7 +306,7 @@ function media(id, title) {
       return { ok: true, status: 200, json: { code: 0, data: { isLogin: true, mid: 42 } } };
     };
     await Promise.all([api.refreshLogin(true), api.refreshLogin(true)]);
-    assert(executeCount === 1, '实际请求次数=' + executeCount);
+    assert(requestCount === 1, '实际请求次数=' + requestCount);
     assert(api.loginInfo.ok && api.loginInfo.mid === 42, '登录结果未共享');
   });
 
@@ -352,7 +402,7 @@ function media(id, title) {
       api.ensureFolderList(true)
     ]);
     assert(first === true && second === true, '并发调用没有共享成功结果');
-    assert(executeCount === 2, '并发刷新重复请求了收藏夹接口，次数=' + executeCount);
+    assert(requestCount === 2, '并发刷新重复请求了收藏夹接口，次数=' + requestCount);
   });
 
   await test('无需刷新调用不会吞掉紧随其后的强制刷新', async () => {
@@ -370,7 +420,7 @@ function media(id, title) {
     const forced = api.ensureFolderList(true);
     const [skippedOk, forcedOk] = await Promise.all([skipped, forced]);
     assert(skippedOk === true && forcedOk === true, '刷新调用返回失败');
-    assert(executeCount === 2, '强制刷新被无需刷新调用吞掉，次数=' + executeCount);
+    assert(requestCount === 2, '强制刷新被无需刷新调用吞掉，次数=' + requestCount);
     assert(api.mem.folders.length === 1 && api.mem.folders[0].mediaId === 2,
       '强制刷新结果没有提交');
   });
@@ -534,7 +584,7 @@ function media(id, title) {
     vm.runInContext('sleep = async () => {}', context);
     try {
       const result = await api.syncOneFolder(folder, { full: true, startPn: 1 });
-      assert(result && result.complete && executeCount === 121, '同步在旧配额阈值中断');
+      assert(result && result.complete && requestCount === 121, '同步在旧配额阈值中断');
       assert(Object.keys(api.mem.items).length === 121, '长夹条目不完整');
       assert(writes.some(w => w.sync && w.sync.cursor && w.sync.cursor.pn > 120), '长夹检查点未继续推进');
     } finally {
@@ -720,7 +770,7 @@ function media(id, title) {
       return { ok: true, json: { code: 0, data: {} } };
     };
     const view = await api.handle({ type: 'HOME_OPEN' }, { tab: { id: 1, url: 'https://www.bilibili.com/' } });
-    assert(view && view.biliTabOpen && !view.syncedOnce, '未返回首次引导所需页面状态');
+    assert(view && view.loginState === 'ok' && !view.syncedOnce, '未返回首次引导所需页面状态');
     assert(!api.mem.syncSession && !api.mem.syncCursor, '用户选夹前自动开始了首次同步');
   });
 
@@ -741,22 +791,90 @@ function media(id, title) {
       '换号后错误沿用了原同步请求');
   });
 
-  await test('普通同步不会被旧的仅刷新标记降级', async () => {
+  await test('无 B 站页面时普通同步清理旧刷新标记并在后台完成', async () => {
     tabQueryResult = [];
     api.mem.meta.pendingFoldersOnly = true;
+    fetchHandler = async url => {
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
+      return { ok: true, json: { code: 0, data: { list: [], count: 0, has_more: false } } };
+    };
     const result = await api.handle({ type: 'SYNC_NOW', full: true, scope: 'all' }, {});
-    assert(result && result.openingHome, '无 B 站页面时没有进入待接续状态');
-    assert(api.mem.syncSession && api.mem.syncSession.full, '同步请求意图未持久化');
-    assert(!api.mem.meta.pendingFoldersOnly, '普通同步仍残留仅刷新标记');
+    assert(result && result.started, '无页面时无法启动后台同步');
+    await api.waitIdle();
+    assert(api.mem.meta.syncedOnce && !api.mem.meta.pendingFoldersOnly, '普通同步被降级或未完成');
+    assert(createdTabs.length === 0, '同步自动打开了首页');
   });
 
-  await test('仅刷新收藏夹在打开首页前持久化操作类型', async () => {
+  await test('无 B 站页面时只刷新收藏夹且不创建内容同步会话', async () => {
     tabQueryResult = [];
+    fetchHandler = async url => {
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
+      return { ok: true, json: { code: 0, data: { list: [], count: 0, has_more: false } } };
+    };
     const result = await api.handle({ type: 'REFRESH_FOLDERS' }, {});
-    assert(result && result.openingHome, '无 B 站页面时没有打开首页');
-    assert(api.mem.pendingFoldersOnly && api.mem.meta.pendingFoldersOnly,
-      '仅刷新操作类型未同时保存在内存和 meta');
-    assert(!api.mem.syncSession, '仅刷新请求错误创建了内容同步会话');
+    assert(result && result.started, '无页面时无法刷新收藏夹');
+    await api.waitIdle();
+    assert(!api.mem.meta.pendingFoldersOnly && !api.mem.syncSession && createdTabs.length === 0,
+      '仅刷新错误启动内容同步或打开页面');
+  });
+
+  await test('未登录时同步返回登录提示且不创建会话或打开页面', async () => {
+    tabQueryResult = [];
+    fetchHandler = async () => ({ ok: true, json: { code: 0, data: { isLogin: false } } });
+    const result = await api.handle({ type: 'SYNC_NOW', full: true }, {});
+    assert(result && result.error && !api.mem.syncSession && createdTabs.length === 0, '未登录仍启动同步');
+  });
+
+  await test('Cookie 变化后忽略尚未返回的旧登录结果', async () => {
+    let release;
+    let entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    fetchHandler = async () => {
+      entered();
+      await new Promise(resolve => { release = resolve; });
+      return { ok: true, json: { code: 0, data: { isLogin: true, mid: 11 } } };
+    };
+    const pending = api.refreshLogin(true);
+    await started;
+    cookieChangeListener({ cookie: { domain: '.bilibili.com', name: 'SESSDATA' } });
+    release();
+    const result = await pending;
+    assert(result.state === 'stale' && !api.loginInfo.ok && !api.mem.meta.mid, '旧 Cookie 登录结果被写回');
+  });
+
+  await test('冷却闹钟可在没有 B 站标签时恢复同步', async () => {
+    tabQueryResult = [];
+    api.mem.meta = { mid: 42, resumeAt: Date.now() - 1000, resumeReason: '412' };
+    api.mem.syncSession = { full: true, scope: 'all', updatedAt: Date.now(), completedFolderIds: [] };
+    fetchHandler = async url => {
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
+      return { ok: true, json: { code: 0, data: { list: [], count: 0, has_more: false } } };
+    };
+    await alarmListener({ name: 'dsh-sync-resume' });
+    await api.waitIdle();
+    assert(api.mem.meta.syncedOnce && !api.mem.syncSession && createdTabs.length === 0, '闹钟续传仍依赖页面');
+  });
+
+  await test('同步分页请求期间 Cookie 变化时停止并拒绝旧页面数据', async () => {
+    api.mem.meta = { mid: 42 };
+    api.mem.syncSession = { full: true, scope: 'all', updatedAt: Date.now(), completedFolderIds: [] };
+    let release;
+    let entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    fetchHandler = async url => {
+      if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
+      if (url.includes('/created/')) return { ok: true, json: { code: 0, data: { list: [{ id: 1, title: '夹', media_count: 1 }] } } };
+      if (url.includes('/collected/')) return { ok: true, json: { code: 0, data: { list: [], count: 0, has_more: false } } };
+      entered();
+      await new Promise(resolve => { release = resolve; });
+      return { ok: true, json: { code: 0, data: { medias: [{ id: 123, type: 2, bvid: 'BVold', title: '旧账号视频' }], has_more: false } } };
+    };
+    const pending = api.runRefresh();
+    await started;
+    cookieChangeListener({ cookie: { domain: '.bilibili.com', name: 'DedeUserID' } });
+    release();
+    await pending;
+    assert(!api.mem.items.BVold && !api.mem.meta.syncedOnce && api.mem.syncSession, '旧分页结果被接受或同账号断点丢失');
   });
 
   await test('仅刷新收藏夹遇到 412 后仍保持原操作类型', async () => {

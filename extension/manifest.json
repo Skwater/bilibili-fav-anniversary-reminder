@@ -6,7 +6,7 @@
   "minimum_chrome_version": "116",
   "permissions": [
     "storage",
-    "scripting",
+    "cookies",
     "alarms"
   ],
   "host_permissions": [

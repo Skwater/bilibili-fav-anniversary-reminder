@@ -3,7 +3,7 @@
  * 哔哩朝花夕拾 - background (MV3 Service Worker)
  * 职责：数据与计算的唯一权威
  *   - 持有本地缓存（storage.local）
- *   - 通过注入页面主世界的 fetch 读取 B 站数据（凭据由浏览器自动携带）
+ *   - 在后台请求 B 站接口，登录 Cookie 由浏览器自动携带
  *   - 同步引擎（增量优先 + 全量兜底 + 断点续传）
  *   - “历史上的今天”匹配（支持调试用模拟日期）
  *   - 向 content 推送视图、响应 popup/options
@@ -20,7 +20,7 @@ const mem = {
   pendingFull: false,     // 本次 refresh 强制全量
   pendingDailyRun: false, // 本次 refresh 来自“每天一次”自动触发（成功后记当日标记）
   pendingScope: 'all',    // 本次 refresh 的范围：'all' 全部 / 'created' 仅自建 / 'collected' 仅追更
-  pendingManual: false,   // 用户在无 B 站标签时点了同步：待新开首页接续执行
+  pendingManual: false,   // 兼容旧版遗留的待执行同步意图
   pendingFolderIds: null, // 上述待接续请求的自选收藏夹（若有）
   pendingFoldersOnly: false // 本次只刷新收藏夹列表（不扫内容）
 };
@@ -33,9 +33,7 @@ const loginInfo = {
   failedAt: 0      // 连接失败时间（非未登录），用于短 TTL 重试
 };
 const homeTabs = new Map();   // tabId -> lastSeen
-let latestHomeTabId = null;
 let refreshBusy = false;
-let proxySeq = 0;
 let flowCtx = null;           // 当前同步会话现场（进度展示用）
 let flowNote = '';            // 人类可读的同步阶段（展示在浮层/弹窗，方便定位卡点）
 let refreshAttempts = 0;      // 连续失败次数（用于自动重试上限）
@@ -43,6 +41,7 @@ let rateUntil = 0;            // 暂停/冷却截止时间（epoch ms），期�
 let pauseReason = '';         // 本次暂停原因：'412' 风控
 let forceSkipCooldown = false;      // 用户点击“立即同步”：跳过冷却直接开跑（接受再次被 412 的风险）
 let cancelSync = false;             // 用户请求终止当前同步
+let cookieSyncInterrupted = false;  // Cookie 变化暂停请求，保留同账号断点
 let clearAfterSync = false;         // 同步停稳后清空全部数据
 let loginCheckPromise = null;       // 登录检查 single-flight
 let pendingAccountSwitch = null;    // 同步运行中发现换号：停稳后再原子清理旧账号资源
@@ -110,15 +109,6 @@ async function clearHold() {
   pauseReason = '';
   await persistMeta();
   try { await chrome.alarms.clear(RESUME_ALARM); } catch (e) {}
-}
-
-/* 仅当“发送者就是 B 站页面”（content 向导 / popup 恰好点在 B 站标签上）才复用；
-   popup/options 的 sender.tab 可能指向无关页面，不能拿来注入取数 */
-function pickSenderBiliTab(sender) {
-  if (sender && sender.tab && /^https:\/\/[^/]*\.?bilibili\.com\//i.test(sender.tab.url || '')) {
-    return { id: sender.tab.id };
-  }
-  return null;
 }
 
 /* 首次自选：仅保留勾选的收藏夹为启用，其余关闭 */
@@ -474,15 +464,15 @@ async function finishPendingAccountSwitch() {
   pendingAccountSwitch = null;
   await resetForAccountSwitch(pending.mid);
   // runRefresh 内发现换号时，原 HOME_OPEN 已经结束；主动预取新账号夹列表，
-  // 让首页能直接重新展示首次选择向导。
-  if (latestHomeTabId && loginInfo.ok) {
+  // 让插件弹窗重新展示首次选择向导。
+  if (loginInfo.ok) {
     try {
       await ensureFolderList(true);
     } catch (err) {
       if (err && err.kind === 'RATE') {
         const wait = settingMs('rateWaitMs', CFG.RATE_412_WAIT_MS);
         await holdUntil(wait, '412');
-        setFlow('新账号收藏夹触发风控，冷却后可重新打开首页继续');
+        setFlow('新账号收藏夹触发风控，冷却后可重试');
       } else {
         log('换号后预取收藏夹失败:', err);
       }
@@ -500,253 +490,86 @@ function customSyncDue(nowMs) {
   return !lastSyncMs || (now - lastSyncMs) >= customSyncDaysFor(mem.settings) * 24 * 60 * 60 * 1000;
 }
 
-/* ---------------- 请求代理（在页面主世界执行 fetch） ----------------
- * 注意：不能直接在 content script 隔离世界里 fetch —— Chrome 对隔离世界的
- * 跨源凭据请求与页面主世界行为不同（主世界 = 你在控制台手动验证 CORS 的环境）。
- * 因此通过 chrome.scripting 注入到页面 MAIN world 执行，与 B 站自身请求一致。
- * 常规取数请求的凭据由浏览器自动携带，扩展不保存 Cookie。
+/* ---------------- 后台请求（浏览器自动携带站点 Cookie） ----------------
+ * Cookie 由浏览器管理，扩展不复制或持久化登录凭据。
+ * cookies 权限仅用于读取稍后再看接口要求的 CSRF 值及监听登录状态变化。
  */
-/* 该函数会被序列化注入 MAIN world 执行，必须自包含 */
-function mainFetch(url, timeoutMs) {
+let authEpoch = 0;
+let cookieRefreshTimer = null;
+
+async function proxyFetch(url, options = {}) {
+  const requestAuthEpoch = authEpoch;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs || 20000);
-  return fetch(url, { credentials: 'include', signal: controller.signal })
-    .then(async r => {
-      let json = null;
-      try { json = await r.json(); } catch (e) { json = null; }
-      return { ok: r.ok, status: r.status, json };
-    })
-    .catch(err => ({
-      ok: false,
-      error: err && err.name === 'AbortError' ? 'TIMEOUT' : String((err && err.message) || err)
-    }))
-    .finally(() => clearTimeout(timer));
-}
-
-/* 该函数会被序列化注入 B 站页面 MAIN world：仅在用户点击时临时读取
-   bili_jct 作为官方接口要求的 CSRF 参数，不把 Cookie 返回给扩展或写入存储。 */
-function mainAddWatchLater(aid, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs || 20000);
-  const match = document.cookie.match(/(?:^|;\s*)bili_jct=([^;]+)/);
-  if (!match) {
-    clearTimeout(timer);
-    return Promise.resolve({ ok: false, error: 'NO_CSRF' });
-  }
-  const body = new URLSearchParams({ aid: String(aid), csrf: decodeURIComponent(match[1]) });
-  return fetch('https://api.bilibili.com/x/v2/history/toview/add', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-    body,
-    signal: controller.signal
-  }).then(async r => {
-    let json = null;
-    try { json = await r.json(); } catch (e) { json = null; }
-    return {
-      ok: r.ok && !!json && json.code === 0,
-      status: r.status,
-      code: json && json.code,
-      message: (json && json.message) || ''
-    };
-  }).catch(err => ({
-    ok: false,
-    error: err && err.name === 'AbortError' ? 'TIMEOUT' : String((err && err.message) || err)
-  })).finally(() => clearTimeout(timer));
-}
-
-/* 与添加接口相同，仅在用户点击对勾时临时读取 CSRF 并调用官方移除接口。 */
-function mainRemoveWatchLater(aid, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs || 20000);
-  const match = document.cookie.match(/(?:^|;\s*)bili_jct=([^;]+)/);
-  if (!match) {
-    clearTimeout(timer);
-    return Promise.resolve({ ok: false, error: 'NO_CSRF' });
-  }
-  const body = new URLSearchParams({ aid: String(aid), csrf: decodeURIComponent(match[1]) });
-  return fetch('https://api.bilibili.com/x/v2/history/toview/del', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-    body,
-    signal: controller.signal
-  }).then(async r => {
-    let json = null;
-    try { json = await r.json(); } catch (e) { json = null; }
-    return {
-      ok: r.ok && !!json && json.code === 0,
-      status: r.status,
-      code: json && json.code,
-      message: (json && json.message) || ''
-    };
-  }).catch(err => ({
-    ok: false,
-    error: err && err.name === 'AbortError' ? 'TIMEOUT' : String((err && err.message) || err)
-  })).finally(() => clearTimeout(timer));
-}
-
-function contentProxyFetch(url) {
-  return new Promise(resolve => {
-    const tabId = latestHomeTabId;
-    if (!tabId) { resolve({ ok: false, error: 'NO_HOME_TAB' }); return; }
-    const reqId = ++proxySeq;
-    let done = false;
-    const finish = res => { if (!done) { done = true; clearTimeout(timer); resolve(res); } };
-    const timer = setTimeout(() => finish({ ok: false, error: 'TIMEOUT' }), CFG.PROXY_TIMEOUT_MS);
-    chrome.tabs.sendMessage(tabId, { type: MSG.FETCH_URL, reqId, url })
-      .then(res => finish(res || { ok: false, error: 'EMPTY_RESP' }))
-      .catch(e => finish({ ok: false, error: String((e && e.message) || e) }));
-  });
-}
-
-async function proxyFetch(url) {
-  // 自动“标签自愈”：代发目标失效（标签被关/导航/权限异常）时，自动改绑到当前可用的 B 站标签再试一次
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let tabId = latestHomeTabId;
-    if (!tabId) {
-      const t = await findHomeTab();
-      if (!t) return { ok: false, error: 'NO_HOME_TAB' };
-      latestHomeTabId = t.id;
-      homeTabs.set(t.id, Date.now());
-      tabId = t.id;
-    }
-    try {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId },
-        world: 'MAIN',
-        func: mainFetch,
-        args: [url, CFG.PROXY_TIMEOUT_MS]
-      });
-      const r = results && results[0] && results[0].result;
-      if (r) return r;   // { ok, status, json } 或 { ok:false, error }
-      return { ok: false, error: 'EMPTY_INJECT' };
-    } catch (e) {
-      const msg = String((e && e.message) || e);
-      const stale = /Receiving end|Could not establish|Cannot access|No tab|not found|document not|cannot be accessed/i.test(msg);
-      if (stale && attempt === 0) {
-        const t = await findHomeTab();
-        if (t && t.id !== tabId) {
-          latestHomeTabId = t.id;
-          homeTabs.set(t.id, Date.now());
-          log('同步标签失效，已改绑到可用标签', t.id);
-          continue;
-        }
-      }
-      // 注入失败（受限页面/权限异常等）→ 回退 content script 代发
-      return contentProxyFetch(url);
-    }
-  }
-  return { ok: false, error: 'PROXY_REBIND_FAILED' };
-}
-
-/* Popup 可以从任意网站打开。若当前没有可用的 B 站标签，先打开首页，
-   再等待页面进入可注入状态后继续执行用户刚才的稍后再看操作。 */
-async function prepareWatchLaterTab() {
-  const existing = await findHomeTab();
-  if (existing) return { tab: existing, opened: false };
+  const timer = setTimeout(() => controller.abort(), CFG.PROXY_TIMEOUT_MS);
   try {
-    const tab = await chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
-    if (tab && tab.id != null) return { tab, opened: true };
-  } catch (e) {
-    return { tab: null, opened: false, error: String((e && e.message) || e) };
-  }
-  return { tab: null, opened: false, error: 'EMPTY_TAB' };
-}
-
-async function runWatchLaterMutation(target, func, aid) {
-  if (!target || !target.tab || target.tab.id == null) {
-    return { ok: false, error: (target && target.error) || 'NO_BILI_TAB' };
-  }
-  const deadline = Date.now() + CFG.PROXY_TIMEOUT_MS;
-  while (true) {
-    try {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: target.tab.id },
-        world: 'MAIN',
-        func,
-        args: [aid, CFG.PROXY_TIMEOUT_MS]
-      });
-      return (results && results[0] && results[0].result) ||
-        { ok: false, error: 'EMPTY_INJECT', message: 'B 站未返回结果' };
-    } catch (e) {
-      // 新标签仍在导航时注入会失败；只对刚创建的首页等待重试，避免重复提交请求。
-      if (!target.opened || Date.now() >= deadline) {
-        return { ok: false, error: 'INJECT_FAILED', message: String((e && e.message) || e) };
-      }
-      await sleep(300);
-    }
+    const response = await fetch(url, {
+      ...options, credentials: 'include', signal: controller.signal
+    });
+    let json = null;
+    try { json = await response.json(); } catch (e) {}
+    if (requestAuthEpoch !== authEpoch) return { ok: false, error: 'AUTH_CHANGED' };
+    return { ok: response.ok, status: response.status, json };
+  } catch (err) {
+    return { ok: false, error: err && err.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK_ERROR' };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-async function addToWatchLater(aid) {
+async function mutateWatchLater(aid, remove) {
   const numericAid = Number(aid);
   if (!Number.isSafeInteger(numericAid) || numericAid <= 0) {
     return { ok: false, error: 'INVALID_AID', message: '视频编号无效' };
   }
-  const target = await prepareWatchLaterTab();
-  if (!target.tab) return { ok: false, error: target.error || 'NO_BILI_TAB', message: '无法打开哔哩哔哩首页' };
-  latestHomeTabId = target.tab.id;
+  const identity = await refreshLogin(true);
+  if (identity && identity.accountChanged) {
+    return { ok: false, error: 'ACCOUNT_CHANGED', message: '账号已切换，请重新选择视频' };
+  }
+  if (!loginInfo.ok || (identity && identity.state === 'stale')) {
+    return { ok: false, error: 'NOT_LOGGED_IN', message: loginInfo.error || '请先登录哔哩哔哩' };
+  }
+  const requestMid = loginInfo.mid;
+  const requestEpoch = dataEpoch;
+  const requestAuthEpoch = authEpoch;
   try {
-    const result = await runWatchLaterMutation(target, mainAddWatchLater, numericAid);
-    if (!result) return { ok: false, error: 'EMPTY_INJECT', message: 'B 站未返回结果' };
-    if (result.ok) {
-      const mid = Number(loginInfo.mid || mem.meta.mid) || 0;
-      if (mid) {
-        if (watchLaterInfo.mid !== mid) {
-          watchLaterInfo.mid = mid;
-          watchLaterInfo.aids = new Set();
-        }
-        watchLaterInfo.aids.add(numericAid);
-        watchLaterInfo.checkedAt = Date.now();
-        watchLaterInfo.failedAt = 0;
-        watchLaterInfo.error = '';
+    const csrf = await chrome.cookies.get({ url: 'https://api.bilibili.com/', name: 'bili_jct' });
+    if (requestAuthEpoch !== authEpoch || requestEpoch !== dataEpoch) {
+      return { ok: false, error: 'ACCOUNT_CHANGED', message: '登录状态已变化，请重试' };
+    }
+    if (!csrf || !csrf.value) return { ok: false, error: 'NOT_LOGGED_IN', message: '请先登录哔哩哔哩' };
+    const result = await proxyFetch('https://api.bilibili.com/x/v2/history/toview/' + (remove ? 'del' : 'add'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: new URLSearchParams({ aid: String(numericAid), csrf: csrf.value })
+    });
+    if (requestAuthEpoch !== authEpoch || requestEpoch !== dataEpoch || requestMid !== loginInfo.mid) {
+      return { ok: false, error: 'ACCOUNT_CHANGED', message: '登录状态已变化，请刷新列表' };
+    }
+    const json = result.json || {};
+    if (result.ok && json.code === 0) {
+      if (watchLaterInfo.mid !== requestMid) {
+        watchLaterInfo.mid = requestMid;
+        watchLaterInfo.aids = new Set();
       }
+      if (remove) watchLaterInfo.aids.delete(numericAid);
+      else watchLaterInfo.aids.add(numericAid);
+      watchLaterInfo.checkedAt = Date.now();
+      watchLaterInfo.failedAt = 0;
+      watchLaterInfo.error = '';
       schedulePushView();
-      return { ok: true, inWatchLater: true };
+      return { ok: true, inWatchLater: !remove };
     }
-    if (result.error === 'NO_CSRF' || result.code === -101) {
-      return { ok: false, error: 'NOT_LOGGED_IN', message: '请先登录哔哩哔哩' };
-    }
-    return Object.assign({}, result, { message: result.message || '加入稍后再看失败' });
+    if (json.code === -101) return { ok: false, error: 'NOT_LOGGED_IN', message: '请先登录哔哩哔哩' };
+    return { ok: false, error: result.error, status: result.status, code: json.code,
+      message: json.message || (remove ? '移出稍后再看失败' : '加入稍后再看失败') };
   } catch (e) {
-    return { ok: false, error: 'INJECT_FAILED', message: String((e && e.message) || e) };
+    return { ok: false, error: 'COOKIE_ACCESS_FAILED', message: '无法读取登录 Cookie，请检查扩展权限' };
   }
 }
+function addToWatchLater(aid) { return mutateWatchLater(aid, false); }
+function removeFromWatchLater(aid) { return mutateWatchLater(aid, true); }
 
-async function removeFromWatchLater(aid) {
-  const numericAid = Number(aid);
-  if (!Number.isSafeInteger(numericAid) || numericAid <= 0) {
-    return { ok: false, error: 'INVALID_AID', message: '视频编号无效' };
-  }
-  const target = await prepareWatchLaterTab();
-  if (!target.tab) return { ok: false, error: target.error || 'NO_BILI_TAB', message: '无法打开哔哩哔哩首页' };
-  latestHomeTabId = target.tab.id;
-  try {
-    const result = await runWatchLaterMutation(target, mainRemoveWatchLater, numericAid);
-    if (!result) return { ok: false, error: 'EMPTY_INJECT', message: 'B 站未返回结果' };
-    if (result.ok) {
-      const mid = Number(loginInfo.mid || mem.meta.mid) || 0;
-      if (mid && watchLaterInfo.mid === mid) {
-        watchLaterInfo.aids.delete(numericAid);
-        watchLaterInfo.checkedAt = Date.now();
-        watchLaterInfo.failedAt = 0;
-        watchLaterInfo.error = '';
-      }
-      schedulePushView();
-      return { ok: true, inWatchLater: false };
-    }
-    if (result.error === 'NO_CSRF' || result.code === -101) {
-      return { ok: false, error: 'NOT_LOGGED_IN', message: '请先登录哔哩哔哩' };
-    }
-    return Object.assign({}, result, { message: result.message || '移出稍后再看失败' });
-  } catch (e) {
-    return { ok: false, error: 'INJECT_FAILED', message: String((e && e.message) || e) };
-  }
-}
-
-/* 稍后再看是账号侧的易变状态，只保存在当前 Service Worker 内存中。
-   使用现有 B 站页面代发官方接口，不保存 Cookie，也不新增扩展权限。 */
+/* 稍后再看列表只保存在当前 Service Worker 内存中，账号切换时清除。 */
 function watchLaterAidsFrom(json) {
   const list = json && json.data && Array.isArray(json.data.list) ? json.data.list : [];
   const aids = new Set();
@@ -834,6 +657,7 @@ async function refreshLogin(force) {
     if (last && (now - last) < ttl) return;
   }
   const requestEpoch = dataEpoch;
+  const requestAuthEpoch = authEpoch;
   const task = (async () => {
     loginInfo.checking = true;
     setFlow('正在检查登录状态…');
@@ -845,18 +669,16 @@ async function refreshLogin(force) {
     }
 
     // 清空数据或换号后，旧请求所代表的账号上下文已经失效，禁止重新写回 mid/登录态。
-    if (requestEpoch !== dataEpoch) {
+    if (requestEpoch !== dataEpoch || requestAuthEpoch !== authEpoch) {
       log('忽略已失效的登录检查结果');
       return { state: 'stale' };
     }
 
     if (!res || !res.ok) {
-      // 连接失败（注入失败/超时/找不到标签）：不是未登录 —— 不写 checkedAt、不清 mid
+      // 网络或权限异常无法确认登录；保留本地缓存所属账号。
       loginInfo.ok = false;
       loginInfo.checkedAt = 0;
-      loginInfo.error = (res && res.error === 'NO_HOME_TAB')
-        ? '未找到可用的哔哩哔哩页面标签'
-        : ('请求失败: ' + ((res && (res.error || res.status)) || '未知错误'));
+      loginInfo.error = '请求失败: ' + ((res && (res.error || res.status)) || '未知错误');
       loginInfo.failedAt = Date.now();
       setFlow('无法连接 B 站接口：' + loginInfo.error);
       log('登录检查失败（按“未知”处理，不算未登录）：', loginInfo.error);
@@ -1143,7 +965,9 @@ async function syncOneFolder(folder, opts) {
       for (let attempt = 0; attempt <= CFG.MAX_RETRY; attempt++) {
         if (attempt > 0) await sleep(1500 + attempt * 1500);
         const requestStartedAt = Date.now();
+        if (cancelSync) throw Object.assign(new Error('cancel'), { kind: 'STOP' });
         const res = await proxyFetch(url);
+        if (cancelSync) throw Object.assign(new Error('cancel'), { kind: 'STOP' });
         if (!res.ok) {
           if (res.status === 412) {
             log('夹页 HTTP 412（风控），进入冷却', url);
@@ -1387,9 +1211,6 @@ async function runSyncPass(folders, forceFull) {
       await markSessionFolderComplete(folder.mediaId);
       pushView();
       resume = null;
-      if (!latestHomeTabId) {
-        throw Object.assign(new Error('B 站页面已关闭'), { kind: 'RETRY_LATER' });
-      }
       continue;
     }
 
@@ -1558,7 +1379,7 @@ async function runSyncPass(folders, forceFull) {
       folder.diffMedia = folder.mediaCount || 0;
       folder.diffFingerprint = remoteFingerprint;
       folder.diffCheckedAt = Date.now();
-      await persistFolders();   // 立即落盘：请求中断/页面关闭也不丢已核对夹的基线
+      await persistFolders();   // 立即落盘：请求中断也不丢已核对夹的基线
       pushView();
       await sleep(CFG.PAGE_GAP_MS);
     } else if (j.code === -101) {
@@ -1598,7 +1419,7 @@ async function runRefresh(verifiedMid) {
     } else {
       // 暂停/冷却中：任何点击/自动触发都不静默，给出可见倒计时提示
       const s = Math.max(1, Math.ceil(wait / 1000));
-      setFlow('B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传，请勿关闭本页面');
+      setFlow('B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传');
       pushView();
       return;
     }
@@ -1607,14 +1428,14 @@ async function runRefresh(verifiedMid) {
   if (mem.meta.resumeAt) await clearHold();
   if (refreshBusy) return;
   refreshBusy = true;
-  await setSyncBadge(true);
   // 新会话复位终止标志：空闲期点过“终止”只清了冷却/游标，不该让下一次手动同步
   // 一开始就被残留的 cancelSync 立刻 STOP（曾导致终止后需点两次才开始）。
   cancelSync = false;
+  cookieSyncInterrupted = false;
+  await setSyncBadge(true);
   pauseReason = '';
   try {
     await ensureLoaded();
-    if (!latestHomeTabId) { log('刷新中止：无首页标签页'); return; }
     setFlow('开始同步…');
     log('刷新开始');
     // await：确保“同步中”视图在登录检查之前生成完毕，避免与检查态交错
@@ -1756,22 +1577,28 @@ async function runRefresh(verifiedMid) {
       // 不清 meta.mid：它表示现有缓存属于谁，退出登录不等于换号。
       setFlow('登录已失效，请重新登录哔哩哔哩');
     } else if (err && err.kind === 'STOP') {
-      // 用户终止：取消自动续传/重试，清理标记与游标
       cancelSync = false;
-      clearPendingRequests();
-      await clearHold();
-      await clearSyncState();
       refreshAttempts = 99;
-      setFlow('同步已终止');
-      log('同步已由用户终止');
+      if (cookieSyncInterrupted) {
+        cookieSyncInterrupted = false;
+        setFlow('登录状态发生变化，同步进度已保留，请确认账号后重试');
+        log('Cookie 变化，同步暂停并保留进度');
+      } else {
+        // 用户终止：取消自动续传/重试，清理标记与游标
+        clearPendingRequests();
+        await clearHold();
+        await clearSyncState();
+        setFlow('同步已终止');
+        log('同步已由用户终止');
+      }
     } else if (err && err.kind === 'RETRY_LATER') {
       // 请求失败后保留断点；不再人为设置暂停时间。
       setFlow('同步请求失败，断点已保存，请稍后重试');
-      log('同步中断（页面关闭/超时/标签失效），游标已保存');
+      log('同步请求中断，进度已保存');
     } else if (err && err.kind === 'RATE') {
       const wait = settingMs('rateWaitMs', CFG.RATE_412_WAIT_MS);   // 412 冷却（设置页可调，默认 15 分钟）
       await holdUntil(wait, '412');
-      setFlow('B 站接口风控(412)：暂停 ' + Math.round(wait / 1000) + ' 秒后自动续传，请勿关闭本页面');
+      setFlow('B 站接口风控(412)：暂停 ' + Math.round(wait / 1000) + ' 秒后自动续传');
       log('412 风控，冷却至', new Date(rateUntil).toLocaleTimeString(), '后自动续传');
     } else {
       setFlow('同步出错：' + ((err && err.message) || err));
@@ -1794,11 +1621,11 @@ async function runRefresh(verifiedMid) {
       pushView();
       return;
     }
-    // 首次同步未完成且仍有首页标签时自动续跑（上限 8 次，避免死循环）
-    if (mem.syncSession && !mem.meta.syncedOnce && latestHomeTabId &&
+    // 首次同步未完成且登录有效时自动续跑（上限 8 次，避免死循环）
+    if (mem.syncSession && !mem.meta.syncedOnce && loginInfo.ok &&
         refreshAttempts < 8 && rateUntil <= Date.now()) {
       setTimeout(() => {
-        if (mem.syncSession && !refreshBusy && !mem.meta.syncedOnce && latestHomeTabId) {
+        if (mem.syncSession && !refreshBusy && !mem.meta.syncedOnce && loginInfo.ok) {
           log('自动重试刷新（第', refreshAttempts, '次）');
           runRefresh();
         }
@@ -1991,7 +1818,6 @@ async function buildView() {
     syncing,
     firstSyncPending: !mem.meta.syncedOnce && !!(mem.syncSession || mem.syncCursor),
     loadingFolders: refreshBusy && !!mem.meta.pendingFoldersOnly,
-    biliTabOpen: !!(await findHomeTab()),
     fullSyncRemind,
     syncLabel: flowCtx
       ? `同步中：${flowCtx.folderTitle}（${flowCtx.folderIndex}/${flowCtx.folderTotal}，${flowCtx.phase}）`
@@ -2028,27 +1854,8 @@ async function pushView() {
   } catch (e) { /* 忽略 */ }
 }
 
-/* 找一个可注入取数的 B 站标签（任意 B 站页面均可主世界注入 fetch）：
-   ① 优先复用当前活动标签；② 其次任意已打开的 B 站标签；③ 都没有才需新开 */
-async function findHomeTab() {
-  const isBili = u => /^https:\/\/[^/]*\.?bilibili\.com\//i.test(u || '');
-  try {
-    const act = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (act && act.length && isBili(act[0].url)) return act[0];
-  } catch (e) {}
-  try {
-    const tabs = await chrome.tabs.query({ url: ['https://*.bilibili.com/*'] });
-    if (tabs && tabs.length) return tabs[0];
-  } catch (e) {}
-  return null;
-}
-
-/* 手动操作先绑定一个真实 B 站标签并确认账号，再判断旧冷却状态。
-   这样旧账号的冷却不会阻挡新账号进入首次选择。 */
-async function prepareAccountForAction(tab) {
-  if (!tab) return null;
-  homeTabs.set(tab.id, Date.now());
-  latestHomeTabId = tab.id;
+/* 手动操作强制确认当前账号，避免旧冷却状态阻挡新账号首次选择。 */
+async function prepareAccountForAction() {
   let loginResult = null;
   try {
     loginResult = await refreshLogin(true);
@@ -2076,9 +1883,8 @@ async function handle(msg, sender) {
     case MSG.HOME_OPEN: {
       if (sender.tab && sender.tab.id != null) {
         homeTabs.set(sender.tab.id, Date.now());
-        latestHomeTabId = sender.tab.id;
       }
-      // 首页是账号切换的主检测点：必须绕过登录缓存拿到当前 mid。
+      // 打开首页时额外复核当前账号，绕过登录缓存。
       let loginResult = null;
       try { loginResult = await refreshLogin(true); } catch (e) { log('首页登录复核失败:', e); }
       if (loginResult && loginResult.accountChanged && loginResult.deferred) return buildView();
@@ -2187,9 +1993,11 @@ async function handle(msg, sender) {
       log('收到同步请求:', { folderIds: (msg.folderIds || []).length, full: !!msg.full, scope: msg.scope || 'all', force: !!msg.force, fromContent: !!(sender && sender.tab) });
       const force = !!msg.force;
       if (refreshBusy) return { started: false, busy: true };
-      // 有可用页面时先识别账号；若已换号，旧账号冷却和待同步意图都必须作废。
-      const tab = pickSenderBiliTab(sender) || await findHomeTab();
-      const identity = await prepareAccountForAction(tab);
+      // 操作前先识别账号；换号后重新选择收藏夹。
+      const identity = await prepareAccountForAction();
+      if (!loginInfo.ok || (identity && identity.state === 'stale')) {
+        return { started: false, error: loginInfo.error || '请先登录哔哩哔哩' };
+      }
       if (identity && identity.accountChanged) {
         return { started: false, accountChanged: true, deferred: !!identity.deferred };
       }
@@ -2198,12 +2006,12 @@ async function handle(msg, sender) {
         const s = Math.max(1, Math.ceil(wait / 1000));
         const reason = '412';
         log('同步请求被冷却拦截，剩余', s, '秒');
-        setFlow('B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传，请勿关闭本页面');
+        setFlow('B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传');
         pushView();
         return { started: false, cooldown: true, seconds: s, reason };
       }
       if (force) forceSkipCooldown = true;   // 交由 runRefresh 清除冷却并开跑
-      // 空闲时立即把请求意图落盘，避免“自动打开首页”途中 SW 重启后丢失 full/scope。
+      // 空闲时立即把请求意图落盘，避免 SW 重启后丢失 full/scope。
       if (!refreshBusy && !mem.syncSession) {
         refreshAttempts = 0;
         const selectedIds = Array.isArray(msg.folderIds) ? msg.folderIds.slice() : null;
@@ -2223,20 +2031,11 @@ async function handle(msg, sender) {
         mem.pendingFull = false;
         mem.pendingScope = 'all';
       }
-      // 复用真实 B 站页面（content 向导 / popup 正好点在 B 站上）；否则查已打开的 B 站标签
       // 普通同步必须清掉可能由旧的“仅刷新列表”请求留下的标记，否则 HOME_OPEN
       // 会把这次内容同步误判成只刷新收藏夹并提前结束。
       if (mem.meta.pendingFoldersOnly) {
         delete mem.meta.pendingFoldersOnly;
         await persistMeta();
-      }
-      if (!tab) {
-        // 没有任何 B 站标签：记录本次请求 → 前台打开首页 → 页面加载后由 HOME_OPEN 接续执行
-        mem.pendingFolderIds = Array.isArray(msg.folderIds) ? msg.folderIds.slice() : null;
-        mem.pendingManual = true;
-        chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
-        log('无 B 站标签，自动打开首页（同步待接续）');
-        return { openingHome: true };
       }
       if (Array.isArray(msg.folderIds)) {
         await applyFolderSelection(msg.folderIds);
@@ -2248,8 +2047,10 @@ async function handle(msg, sender) {
 
     case MSG.REFRESH_FOLDERS: {
       if (refreshBusy) return { started: false, busy: true };
-      const tab = pickSenderBiliTab(sender) || await findHomeTab();
-      const identity = await prepareAccountForAction(tab);
+      const identity = await prepareAccountForAction();
+      if (!loginInfo.ok || (identity && identity.state === 'stale')) {
+        return { started: false, error: loginInfo.error || '请先登录哔哩哔哩' };
+      }
       if (identity && identity.accountChanged) {
         return { started: false, accountChanged: true, deferred: !!identity.deferred };
       }
@@ -2258,21 +2059,15 @@ async function handle(msg, sender) {
       if (wait2 > 0) {
         const s = Math.max(1, Math.ceil(wait2 / 1000));
         const reason = '412';
-        setFlow('B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传，请勿关闭本页面');
+        setFlow('B 站接口风控(412)冷却中，约 ' + s + ' 秒后自动续传');
         pushView();
         return { cooldown: true, seconds: s, reason };
       }
-      // 在查找/自动打开页面之前持久化操作类型，避免这段窗口内 SW 重启后
+      // 请求前持久化操作类型，避免这段窗口内 SW 重启后
       // 把“仅刷新列表”恢复成内容同步。
       mem.pendingFoldersOnly = true;
       mem.meta.pendingFoldersOnly = true;
       await persistMeta();
-      if (!tab) {
-        mem.pendingManual = true;
-        chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
-        log('无 B 站标签，打开首页（刷新收藏夹待接续）');
-        return { openingHome: true };
-      }
       runRefresh(loginInfo.mid);
       log('收藏夹列表刷新请求已受理');
       return { started: true };
@@ -2280,6 +2075,7 @@ async function handle(msg, sender) {
 
     case MSG.CANCEL_SYNC: {
       log('收到终止同步请求');
+      cookieSyncInterrupted = false;
       cancelSync = true;
       clearPendingRequests();
       if (!refreshBusy) {
@@ -2409,20 +2205,36 @@ chrome.alarms.onAlarm.addListener(async alarm => {
     return;
   }
   await clearHold();
-  const tab = await findHomeTab();
-  if (!tab) {
-    log('续传闹钟到点，但没有可用 B 站标签；保留会话，待下次打开 B 站继续');
-    return;
-  }
-  latestHomeTabId = tab.id;
-  homeTabs.set(tab.id, Date.now());
   log('续传闹钟到点，恢复同步');
   runRefresh();
 });
 
 chrome.tabs.onRemoved.addListener(tabId => {
   homeTabs.delete(tabId);
-  if (latestHomeTabId === tabId) latestHomeTabId = null;
+});
+
+chrome.cookies.onChanged.addListener(change => {
+  const cookie = change && change.cookie;
+  if (!cookie || !/(^|\.)bilibili\.com$/i.test(cookie.domain) ||
+      !['SESSDATA', 'DedeUserID', 'bili_jct'].includes(cookie.name)) return;
+  authEpoch++;
+  loginInfo.ok = false;
+  loginInfo.checkedAt = 0;
+  loginInfo.failedAt = 0;
+  clearWatchLaterInfo();
+  if (refreshBusy && !cancelSync) {
+    cookieSyncInterrupted = true;
+    cancelSync = true;
+  }
+  clearTimeout(cookieRefreshTimer);
+  cookieRefreshTimer = setTimeout(async () => {
+    try {
+      await ensureLoaded();
+      let identity = await refreshLogin(true);
+      if (identity && identity.state === 'stale') identity = await refreshLogin(true);
+      await pushView();
+    } catch (e) { log('Cookie 变化后登录复核失败'); }
+  }, 300);
 });
 
 /* SW 启动：预热缓存，避免首条消息延迟 */

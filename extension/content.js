@@ -1,32 +1,5 @@
 'use strict';
-/* ============================================================
- * 哔哩朝花夕拾 - content script（仅注入 B 站首页）
- * 职责：
- *   1. 作为“取数代理”：接收 background 的 FETCH_URL，在页面上下文
- *      发起 fetch（自动携带 Cookie）
- *   2. 仅在有每日命中时渲染首页右下角提醒
- * ============================================================ */
-
-/* ---------------- 取数代理 ---------------- */
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg && msg.type === MSG.FETCH_URL) {
-    (async () => {
-      try {
-        const resp = await fetch(msg.url, { credentials: 'include' });
-        if (!resp.ok) {
-          sendResponse({ ok: false, status: resp.status, error: 'HTTP ' + resp.status });
-          return;
-        }
-        let json = null;
-        try { json = await resp.json(); } catch (e) { json = null; }
-        sendResponse({ ok: true, status: resp.status, json });
-      } catch (err) {
-        sendResponse({ ok: false, error: String((err && err.message) || err) });
-      }
-    })();
-    return true; // 异步
-  }
-});
+/* 哔哩朝花夕拾 - content script：仅在 B 站首页显示每日历史投稿提醒。 */
 
 /* ---------------- 浮层 UI ---------------- */
 let view = null;
