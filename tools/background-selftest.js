@@ -228,6 +228,30 @@ function media(id, title) {
     assert(added.ok && createdTabs.length === 0, '稍后再看依赖打开首页');
   });
 
+  await test('稍后再看失败提示区分 HTTP、网络、超时和接口错误', async () => {
+    const cases = [
+      [{ ok: false, status: 412 }, 'HTTP 412'],
+      [{ ok: false, status: 403 }, 'HTTP 403'],
+      [{ ok: true, json: null }, '响应格式异常'],
+      [{ ok: true, json: { code: -111, message: 'csrf error' } }, 'code=-111'],
+      [{ ok: true, json: { code: 90001, message: '0' } }, '列表已满'],
+      ['network', 'NETWORK_ERROR'],
+      ['timeout', 'TIMEOUT']
+    ];
+    for (const [response, expected] of cases) {
+      fetchHandler = async url => {
+        if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
+        if (response === 'network') throw new Error('test network failure');
+        if (response === 'timeout') throw Object.assign(new Error('test timeout'), { name: 'AbortError' });
+        return response;
+      };
+      const result = await api.addToWatchLater(456);
+      assert(!result.ok && result.message.includes(expected), '丢失具体失败原因：' + expected);
+      assert(!api.decorateWatchLaterHits([{ aid: 456 }])[0].inWatchLater, '失败时写入了已加入状态');
+    }
+    assert(!JSON.stringify(store).includes(csrfValue), '错误处理保存了 CSRF');
+  });
+
   await test('缺少 CSRF 时拒绝提交稍后再看', async () => {
     csrfValue = null;
     fetchHandler = async () => ({ ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } });

@@ -516,6 +516,23 @@ async function proxyFetch(url, options = {}) {
   }
 }
 
+function watchLaterFailureMessage(result, remove) {
+  const action = remove ? '移出稍后再看失败' : '加入稍后再看失败';
+  if (result.error === 'TIMEOUT') return action + '：请求超时（TIMEOUT），请稍后重试';
+  if (result.error === 'NETWORK_ERROR') return action + '：网络请求未完成（NETWORK_ERROR）';
+  if (!result.ok) return action + '：' + (result.status ? 'HTTP ' + result.status : (result.error || '未收到响应'));
+  const json = result.json;
+  if (!json || typeof json.code !== 'number') return action + '：接口响应格式异常（HTTP ' + result.status + '）';
+  const hints = {
+    '-111': '登录校验失败，请重新登录后重试',
+    '-412': '请求被风控拦截，请稍后重试',
+    '90001': '稍后再看列表已满',
+    '90003': '视频已被删除'
+  };
+  const detail = hints[json.code] || (json.message && json.message !== '0' ? json.message : '接口拒绝操作');
+  return action + '：' + detail + '（code=' + json.code + '）';
+}
+
 async function mutateWatchLater(aid, remove) {
   const numericAid = Number(aid);
   if (!Number.isSafeInteger(numericAid) || numericAid <= 0) {
@@ -560,8 +577,11 @@ async function mutateWatchLater(aid, remove) {
       return { ok: true, inWatchLater: !remove };
     }
     if (json.code === -101) return { ok: false, error: 'NOT_LOGGED_IN', message: '请先登录哔哩哔哩' };
+    // 仅记录状态码，不记录 Cookie、CSRF、请求正文或原始响应。
+    log('稍后再看操作失败:', { action: remove ? 'remove' : 'add', status: result.status,
+      code: json.code, error: result.error });
     return { ok: false, error: result.error, status: result.status, code: json.code,
-      message: json.message || (remove ? '移出稍后再看失败' : '加入稍后再看失败') };
+      message: watchLaterFailureMessage(result, remove) };
   } catch (e) {
     return { ok: false, error: 'COOKIE_ACCESS_FAILED', message: '无法读取登录 Cookie，请检查扩展权限' };
   }
