@@ -10,6 +10,8 @@
 
 > 当前正式版：**v1.2.0**
 
+> 当前分支本地测试版：**v1.2.1**（Cookie 后台访问与操作跳转调整，尚未发布）。
+
 > Chrome 应用商店的更新需要审核，商店版本可能比 [GitHub Releases](https://github.com/Skwater/bilibili-fav-anniversary-reminder/releases) 晚几天，个别情况可能更久；实际可安装版本以商店页面显示为准。
 
 打开 `https://www.bilibili.com/` 时，插件按你收藏夹内**视频投稿的发布时间**匹配今天的月日；首页提醒会列出当天全部命中投稿，点击即可回到视频。
