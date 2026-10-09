@@ -62,5 +62,19 @@ eq(f.customSyncDaysFor({ customSyncDays: 7 }), '7', '自定义同步天数');
 eq(f.customSyncDaysFor({ customSyncDays: 0 }), '1', '自定义同步天数下限');
 eq(f.customSyncDaysFor({ customSyncDays: 999 }), '365', '自定义同步天数上限');
 
+// 页面跳转回归检查：仅保留用户点击视频的跳转。
+const extensionFile = name => fs.readFileSync(path.join(__dirname, '..', 'extension', name), 'utf8');
+const popup = extensionFile('popup.js');
+const popupHtml = extensionFile('popup.html');
+eq(/openBiliTab|btnGoStart|chrome\.tabs\.update/.test(popup), false, '插件操作没有打开或激活 B 站主页入口');
+eq(/<span\s+id="loginPill"/.test(popupHtml), true, '账号状态为非交互展示');
+eq(/btnGoStart/.test(popupHtml), false, '首次向导移除打开网站按钮');
+eq(/window\.open/.test(extensionFile('content.js')), false, '首页提醒没有打开登录网站行为');
+for (const name of ['popup.js', 'background.js']) {
+  const calls = extensionFile(name).match(/chrome\.tabs\.create\([^\n]+/g) || [];
+  eq(calls.length, 1, name + '仅保留一个视频打开入口');
+  eq(calls.every(call => call.includes('https://www.bilibili.com/video/')), true, name + '仅跳转视频页面');
+}
+
 console.log(failed === 0 ? '\n全部通过 ✓' : ('\n失败 ' + failed + ' 项 ✗'));
 process.exit(failed === 0 ? 0 : 1);

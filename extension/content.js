@@ -287,8 +287,7 @@ function render(v) {
         [btn('重试', requestHome)]));
     } else {
       show(stateCard('🔒', '未登录哔哩哔哩',
-        '请在哔哩哔哩登录后使用“历史上的今天”提醒。',
-        [btn('去登录', () => window.open('https://passport.bilibili.com/login', '_blank'))]));
+        '请自行在当前浏览器登录哔哩哔哩后使用“历史上的今天”提醒。', []));
     }
     return;
   }

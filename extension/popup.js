@@ -205,13 +205,6 @@ function renderSetupFolders(folders) {
   updateCount();
 }
 
-function openBiliTab() {
-  chrome.tabs.query({ url: ['https://*.bilibili.com/*'] }, tabs => {
-    if (tabs && tabs.length) chrome.tabs.update(tabs[0].id, { active: true });
-    else chrome.tabs.create({ url: 'https://www.bilibili.com/', active: true });
-  });
-}
-
 function render(v) {
   view = v;
 
@@ -266,17 +259,15 @@ function render(v) {
       if (hasSelectableFolders) renderSetupFolders(v.foldersDetailed);
       return;
     }
-    $('btnGoStart').style.display = v.loginState === 'ok' ? 'none' : 'block';
     $('setupQuickActions').style.display = 'flex';
     $('btnEnterSetup').disabled = v.loginState !== 'ok';
     $('btnEnterSetup').textContent = '首次同步';
-    $('btnGoStart').textContent = '登录哔哩哔哩';
     const status = $('welcomeStatus');
     status.style.display = 'none';
     if (v.loginState === 'no') {
       status.style.display = 'block';
       status.textContent = '请先登录哔哩哔哩';
-      $('welcomeText').textContent = '登录后点击下方“读取登录状态”，再进行首次同步。';
+      $('welcomeText').textContent = '请自行在当前浏览器登录哔哩哔哩，再点击“读取登录状态”进行首次同步。';
     } else if (v.loginState === 'unknown' && v.loginError) {
       status.style.display = 'block';
       status.textContent = '暂时无法读取账号';
@@ -538,7 +529,6 @@ function moveCalendarYear(delta) {
 let syncScope = 'all';   // 本次同步范围：全部 / 仅自建 / 仅追更
 
 document.addEventListener('DOMContentLoaded', () => {
-  $('btnGoStart').addEventListener('click', openBiliTab);
   $('btnCheckLogin').addEventListener('click', () => {
     $('btnCheckLogin').disabled = true;
     chrome.runtime.sendMessage({ type: MSG.CHECK_LOGIN }, r => {
@@ -601,9 +591,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
   $('setupStop').addEventListener('click', () => chrome.runtime.sendMessage({ type: MSG.CANCEL_SYNC }, () => askView()));
-  $('loginPill').addEventListener('click', () => {
-    openBiliTab();
-  });
   $('tabToday').addEventListener('click', () => setActiveView('today'));
   $('tabReview').addEventListener('click', () => setActiveView('review'));
   $('tabCalendar').addEventListener('click', () => setActiveView('calendar'));

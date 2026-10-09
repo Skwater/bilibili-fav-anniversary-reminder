@@ -14,11 +14,7 @@
     .name { font-weight: 700; font-size: 15px; }
     .name small { color: #9499a0; font-weight: 400; margin-left: 6px; }
     .pill { border: none; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #f1f2f3;
-      color: #61666d; cursor: pointer; }
-    .pill:hover { background: #f1f2f3; filter: brightness(.97); }
-    .pill.ok:hover { background: #e8f6fb; }
-    .pill.warn:hover { background: #fff7ec; }
-    .pill.sim:hover { background: #4b2e83; }
+      color: #61666d; }
     .pill.ok { background: #e8f6fb; color: #00a1d6; }
     .pill.warn { background: #fff7ec; color: #f08519; }
     .pill.sim { background: #4b2e83; color: #fff; }
@@ -167,7 +163,6 @@
     <div class="w-name">哔哩朝花夕拾</div>
     <div id="welcomeStatus" class="w-status" style="display:none"></div>
     <div id="welcomeText" class="w-sub">欢迎使用！同步收藏夹后，每次打开哔哩哔哩首页，就能看到「历史上的今天」提醒。</div>
-    <button id="btnGoStart" class="primary btn-go" type="button">登录哔哩哔哩</button>
     <div id="setupQuickActions" class="setup-quick-actions" style="display:none">
       <button id="btnCheckLogin" type="button">读取登录状态</button>
       <button id="btnEnterSetup" type="button">首次同步</button>
@@ -196,7 +191,7 @@
   <div id="mainBox" style="display:none">
     <div class="head">
       <div class="name">哔哩朝花夕拾<small>收藏·历史上的今天</small></div>
-      <button id="loginPill" class="pill" type="button" aria-label="打开哔哩哔哩主页">…</button>
+      <span id="loginPill" class="pill" aria-label="账号登录状态">…</span>
     </div>
 
     <div id="debugHint" class="hint" style="display:none"></div>
