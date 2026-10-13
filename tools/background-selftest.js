@@ -65,7 +65,7 @@ const chrome = {
 };
 
 const context = vm.createContext({
-  chrome, console, setTimeout, clearTimeout, Math, Date, Promise, AbortController, FormData,
+  chrome, console, setTimeout, clearTimeout, Math, Date, Promise, AbortController, URLSearchParams,
   async fetch(url, options) {
     requestCount++;
     const result = await fetchHandler(url, options);
@@ -212,8 +212,8 @@ function media(id, title) {
       assert(options.credentials === 'include', '后台未携带浏览器凭据');
       if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
       assert(url.endsWith('/toview/add') && options.method === 'POST', '稍后再看请求错误');
-      assert(options.body instanceof FormData, '未使用网页相同的 multipart 表单');
-      assert(!options.headers, '手动设置了表单 Content-Type，浏览器无法正确生成 boundary');
+      assert(options.body instanceof URLSearchParams, '未使用 URL 编码表单');
+      assert(options.headers['Content-Type'] === 'application/x-www-form-urlencoded;charset=UTF-8', '表单 Content-Type 错误');
       assert(options.body.get('aid') === '123' && options.body.get('csrf') === csrfValue, '提交参数错误');
       return { ok: true, json: { code: 0 } };
     };
@@ -222,12 +222,13 @@ function media(id, title) {
     assert(!JSON.stringify(store).includes(csrfValue), 'CSRF 被写入存储');
   });
 
-  await test('移出稍后再看也使用浏览器生成的 multipart 表单', async () => {
+  await test('移出稍后再看使用 URL 编码表单', async () => {
     fetchHandler = async (url, options) => {
       if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
       assert(url.endsWith('/toview/del') && options.method === 'POST', '移出接口请求错误');
-      assert(options.credentials === 'include' && options.body instanceof FormData, '移出未携带凭据或未使用 FormData');
-      assert(!options.headers && options.body.get('aid') === '123' && options.body.get('csrf') === csrfValue, '移出表单参数或 Content-Type 错误');
+      assert(options.credentials === 'include' && options.body instanceof URLSearchParams, '移出未携带凭据或未使用 URL 编码表单');
+      assert(options.headers['Content-Type'] === 'application/x-www-form-urlencoded;charset=UTF-8' &&
+        options.body.get('aid') === '123' && options.body.get('csrf') === csrfValue, '移出表单参数或 Content-Type 错误');
       return { ok: true, json: { code: 0 } };
     };
     const removed = await api.removeFromWatchLater(123);
