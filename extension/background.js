@@ -496,6 +496,42 @@ function customSyncDue(nowMs) {
  */
 let authEpoch = 0;
 let cookieRefreshTimer = null;
+const WATCH_LATER_RULE_ID = 120401;
+let watchLaterRulesPromise = null;
+
+/* 只匹配本扩展发起的两个写接口，不影响网页、其他扩展或其他 B 站请求。 */
+async function ensureWatchLaterRequestRules() {
+  if (watchLaterRulesPromise) return watchLaterRulesPromise;
+  const task = (async () => {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: [WATCH_LATER_RULE_ID],
+      addRules: [{
+        id: WATCH_LATER_RULE_ID,
+        priority: 1,
+        action: {
+          type: 'modifyHeaders',
+          requestHeaders: [
+            { header: 'origin', operation: 'set', value: 'https://www.bilibili.com' },
+            { header: 'referer', operation: 'set', value: 'https://www.bilibili.com/' }
+          ]
+        },
+        condition: {
+          regexFilter: '^https://api\\.bilibili\\.com/x/v2/history/toview/(add|del)(\\?.*)?$',
+          isUrlFilterCaseSensitive: true,
+          initiatorDomains: [chrome.runtime.id],
+          requestMethods: ['post'],
+          resourceTypes: ['xmlhttprequest']
+        }
+      }]
+    });
+  })();
+  watchLaterRulesPromise = task;
+  try { await task; }
+  catch (e) {
+    if (watchLaterRulesPromise === task) watchLaterRulesPromise = null;
+    throw e;
+  }
+}
 
 async function proxyFetch(url, options = {}) {
   const requestAuthEpoch = authEpoch;
@@ -548,6 +584,11 @@ async function mutateWatchLater(aid, remove) {
   const requestMid = loginInfo.mid;
   const requestEpoch = dataEpoch;
   const requestAuthEpoch = authEpoch;
+  // 注册完成后再提交，避免首个请求先于规则生效；失败时不发送写请求。
+  try { await ensureWatchLaterRequestRules(); }
+  catch (e) {
+    return { ok: false, error: 'REQUEST_RULE_SETUP_FAILED', message: '无法配置稍后再看请求规则，请检查扩展权限并重新加载' };
+  }
   try {
     const csrf = await chrome.cookies.get({ url: 'https://api.bilibili.com/', name: 'bili_jct' });
     if (requestAuthEpoch !== authEpoch || requestEpoch !== dataEpoch) {

@@ -18,9 +18,17 @@ const badgeTexts = [];
 let csrfValue = 'test-csrf';
 let cookieChangeListener;
 let alarmListener;
+const requestRuleUpdates = [];
+let requestRuleError = false;
 
 const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const chrome = {
+  declarativeNetRequest: {
+    async updateDynamicRules(update) {
+      requestRuleUpdates.push(clone(update));
+      if (requestRuleError) throw new Error('test rule setup failure');
+    }
+  },
   storage: {
     local: {
       async get(keys) {
@@ -59,6 +67,7 @@ const chrome = {
     async setBadgeBackgroundColor() {}
   },
   runtime: {
+    id: 'testextensionid',
     getManifest() { return { version: '1.0.0' }; },
     onMessage: { addListener() {} }
   }
@@ -80,7 +89,7 @@ globalThis.__bgtest = {
   ensureLoaded, refreshLogin, ensureFolderList, syncOneFolder, runSyncPass, runRefresh, handle, buildView,
   fingerprintIds, folderAidSet, resetAllData, resetForAccountSwitch, hitsForDateKey, computeCalendarYear, computeSevenDayReview, customSyncDue,
   createDataBackup, createDiagnosticExport, validateDataBackup, importDataBackup, setSyncBadge, addToWatchLater, removeFromWatchLater,
-  refreshWatchLater, decorateWatchLaterHits, proxyFetch,
+  refreshWatchLater, decorateWatchLaterHits, proxyFetch, ensureWatchLaterRequestRules,
   async waitIdle() { for (let i = 0; i < 100; i++) { if (!refreshBusy) return; await sleep(5); } throw new Error('同步未停稳'); },
   clearRate() { rateUntil = 0; pauseReason = ''; delete mem.meta.resumeAt; delete mem.meta.resumeReason; },
   reloadFromStore() { loaded = false; },
@@ -112,6 +121,7 @@ globalThis.__bgtest = {
     homeTabs.set(1, Date.now());
     cancelSync = false;
     cookieSyncInterrupted = false;
+    watchLaterRulesPromise = null;
     rateUntil = 0;
     pauseReason = '';
     clearAfterSync = false;
@@ -131,6 +141,8 @@ async function test(name, fn) {
     writes.length = 0;
     requestCount = 0;
     csrfValue = 'test-csrf';
+    requestRuleUpdates.length = 0;
+    requestRuleError = false;
     createdTabs.length = 0;
     tabQueryResult = [{ id: 1, url: 'https://www.bilibili.com/' }];
     for (const key of Object.keys(store)) delete store[key];
@@ -212,6 +224,7 @@ function media(id, title) {
       assert(options.credentials === 'include', '后台未携带浏览器凭据');
       if (url.includes('/nav')) return { ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } };
       assert(url.endsWith('/toview/add') && options.method === 'POST', '稍后再看请求错误');
+      assert(requestRuleUpdates.length === 1, '写请求早于 DNR 规则注册');
       assert(options.body instanceof URLSearchParams, '未使用 URL 编码表单');
       assert(options.headers['Content-Type'] === 'application/x-www-form-urlencoded;charset=UTF-8', '表单 Content-Type 错误');
       assert(options.body.get('aid') === '123' && options.body.get('csrf') === csrfValue, '提交参数错误');
@@ -220,6 +233,46 @@ function media(id, title) {
     const added = await api.addToWatchLater(123);
     assert(added.ok && requestCount === 2, '稍后再看未完成登录复核与后台提交');
     assert(!JSON.stringify(store).includes(csrfValue), 'CSRF 被写入存储');
+  });
+
+  await test('DNR 规则仅匹配本扩展的稍后再看添加、移除 POST', async () => {
+    await Promise.all([api.ensureWatchLaterRequestRules(), api.ensureWatchLaterRequestRules()]);
+    assert(requestRuleUpdates.length === 1, '并发操作重复注册规则');
+    const update = requestRuleUpdates[0];
+    assert(update.addRules.length === 1 && update.removeRuleIds[0] === update.addRules[0].id, '误清理其他规则');
+    const rule = update.addRules[0];
+    const condition = rule.condition;
+    assert(condition.initiatorDomains.length === 1 && condition.initiatorDomains[0] === chrome.runtime.id, '规则未限定当前扩展');
+    assert(JSON.stringify(condition.requestMethods) === '["post"]' &&
+      JSON.stringify(condition.resourceTypes) === '["xmlhttprequest"]' && condition.isUrlFilterCaseSensitive, '方法、类型或大小写限制错误');
+    const urlMatches = url => new RegExp(condition.regexFilter).test(url);
+    for (const suffix of ['add', 'del', 'add?test=1']) {
+      assert(urlMatches('https://api.bilibili.com/x/v2/history/toview/' + suffix), '未覆盖写接口：' + suffix);
+    }
+    for (const url of ['https://api.bilibili.com/x/v2/history/toview',
+      'https://api.bilibili.com/x/v2/history/toview/additional',
+      'https://api.bilibili.com/x/v2/history/toview/add/extra',
+      'https://api.bilibili.com/x/web-interface/nav',
+      'https://other.example/?url=https://api.bilibili.com/x/v2/history/toview/add',
+      'https://api.bilibili.com.evil.example/x/v2/history/toview/add',
+      'http://api.bilibili.com/x/v2/history/toview/add']) {
+      assert(!urlMatches(url), '规则匹配了无关 URL：' + url);
+    }
+    assert(rule.action.type === 'modifyHeaders' && rule.action.requestHeaders.length === 2, '规则修改了其他行为');
+    assert(JSON.stringify(rule.action.requestHeaders) === JSON.stringify([
+      { header: 'origin', operation: 'set', value: 'https://www.bilibili.com' },
+      { header: 'referer', operation: 'set', value: 'https://www.bilibili.com/' }
+    ]), '改写范围超出 Origin/Referer');
+  });
+
+  await test('DNR 注册失败时不提交写请求，并允许下次重新注册', async () => {
+    requestRuleError = true;
+    fetchHandler = async () => ({ ok: true, json: { code: 0, data: { isLogin: true, mid: 42 } } });
+    const result = await api.addToWatchLater(123);
+    assert(!result.ok && result.error === 'REQUEST_RULE_SETUP_FAILED' && requestCount === 1, '规则失败仍发送写请求');
+    requestRuleError = false;
+    await api.ensureWatchLaterRequestRules();
+    assert(requestRuleUpdates.length === 2, '失败的规则注册无法重试');
   });
 
   await test('移出稍后再看使用 URL 编码表单', async () => {
