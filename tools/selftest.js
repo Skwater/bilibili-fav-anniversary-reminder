@@ -76,5 +76,17 @@ for (const name of ['popup.js', 'background.js']) {
   eq(calls.every(call => call.includes('https://www.bilibili.com/video/')), true, name + '仅跳转视频页面');
 }
 
+// 设置页版本必须来自 manifest，不能另行硬编码。
+const versionElement = { textContent: '' };
+const manifest = JSON.parse(extensionFile('manifest.json'));
+const versionRenderer = new Function('document', 'chrome', extensionFile('options.js') + '\nreturn renderExtensionVersion;')(
+  { getElementById(id) { return id === 'extensionVersion' ? versionElement : null; }, addEventListener() {} },
+  { runtime: { getManifest() { return manifest; } }, storage: { onChanged: { addListener() {} } } }
+);
+versionRenderer();
+eq(versionElement.textContent, 'v' + manifest.version, '设置页显示 manifest 中的实际版本');
+eq(/id="extensionVersion"/.test(extensionFile('options.html')), true, '设置页包含动态版本展示位置');
+eq(/v\d+\.\d+\.\d+/.test(extensionFile('options.html')), false, '设置页未硬编码版本号');
+
 console.log(failed === 0 ? '\n全部通过 ✓' : ('\n失败 ' + failed + ' 项 ✗'));
 process.exit(failed === 0 ? 0 : 1);

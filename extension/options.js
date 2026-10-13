@@ -8,6 +8,10 @@ let syncScope = 'all';   // 本次同步范围：全部 / 仅自建 / 仅追更
 let debugEditorOpen = false;
 const collapsedGroups = new Set(['created', 'collected']); // 两组默认折叠；用户展开后重绘保持当前状态
 
+function renderExtensionVersion() {
+  $('extensionVersion').textContent = 'v' + chrome.runtime.getManifest().version;
+}
+
 function getView() {
   return new Promise(resolve => {
     chrome.runtime.sendMessage({ type: MSG.GET_VIEW }, r => resolve(r || null));
@@ -266,6 +270,7 @@ async function importBackupFile(file) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  renderExtensionVersion();
   await refreshAll();
 
   $('btnSync').addEventListener('click', async () => {
