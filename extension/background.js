@@ -554,10 +554,13 @@ async function mutateWatchLater(aid, remove) {
       return { ok: false, error: 'ACCOUNT_CHANGED', message: '登录状态已变化，请重试' };
     }
     if (!csrf || !csrf.value) return { ok: false, error: 'NOT_LOGGED_IN', message: '请先登录哔哩哔哩' };
+    // 与网页使用相同的表单编码；Content-Type 和 boundary 由浏览器生成。
+    const body = new FormData();
+    body.append('aid', String(numericAid));
+    body.append('csrf', csrf.value);
     const result = await proxyFetch('https://api.bilibili.com/x/v2/history/toview/' + (remove ? 'del' : 'add'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-      body: new URLSearchParams({ aid: String(numericAid), csrf: csrf.value })
+      body
     });
     if (requestAuthEpoch !== authEpoch || requestEpoch !== dataEpoch || requestMid !== loginInfo.mid) {
       return { ok: false, error: 'ACCOUNT_CHANGED', message: '登录状态已变化，请刷新列表' };
