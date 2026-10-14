@@ -10,9 +10,7 @@
 
 > 🛒 **一键安装**：[Chrome 应用商店 · 哔哩朝花夕拾](https://chromewebstore.google.com/detail/kgamlldkccpldahaohnbnnfdnegphppe)
 
-> 当前正式版：**v1.2.0**
-
-> 当前分支本地测试版：**v1.2.4**（Cookie 后台访问与稍后再看请求来源兼容性调整，尚未发布）。
+> 当前版本：**v1.3.0**
 
 > Chrome 应用商店的更新需要审核，商店版本可能比 [GitHub Releases](https://github.com/Skwater/bilibili-fav-anniversary-reminder/releases) 晚几天，个别情况可能更久；实际可安装版本以商店页面显示为准。
 
@@ -76,7 +74,7 @@
 - **高级设置**（设置页最底部折叠区）：412 冷却、模拟首页日期、清空数据
 - **调试**：设置页「高级设置 → 模拟首页日期」设定测试日期；有当日命中内容时，可用「重新显示当日提醒」再次查看首页提醒
 
-当前分支的稍后再看添加、移除使用 URL 编码表单，并通过 DNR 规则设置请求的 `Origin`、`Referer`。规则仅匹配本扩展发出的 `api.bilibili.com/x/v2/history/toview/add`、`del` 两个 POST 接口；不修改 Cookie、正文、网页请求或其他扩展请求，也不打开网站。规则注册失败时不提交写请求；服务器返回 412 时显示错误，不自动重试。2026-10-13，用户在 Chrome 中实测确认调整后稍后再看功能恢复正常；该结果对应用户当前环境，不保证其他环境不会触发风控。
+稍后再看添加、移除使用 URL 编码表单，并通过 DNR 规则设置请求的 `Origin`、`Referer`。规则仅匹配本扩展发出的 `api.bilibili.com/x/v2/history/toview/add`、`del` 两个 POST 接口；不修改 Cookie、正文、网页请求或其他扩展请求，也不打开网站。规则注册失败时不提交写请求；服务器返回 412 时显示错误，不自动重试。
 
 ## 同步与风控
 
